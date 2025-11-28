@@ -1,0 +1,690 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Upload, Shuffle, CheckCircle, RefreshCcw, MousePointer2, Grid3X3, Trophy, X, MinusCircle, Clock } from 'lucide-react';
+
+export default function App() {
+  const [image, setImage] = useState(null);
+  
+  // selection: { x, y, w, h } (全部基于图片原始分辨率的坐标)
+  const [selection, setSelection] = useState(null);
+  
+  // 交互状态
+  const [interaction, setInteraction] = useState({
+    isDragging: false,
+    // 'create' | 'resize' | 'move' | 'pending_move' | 'none'
+    mode: 'none', 
+    activeHandle: null,
+    startPos: { x: 0, y: 0 }, // 鼠标起始位置 (Canvas坐标)
+    initialSelection: null,   // 拖动前的选区状态
+  });
+  // 屏幕物理坐标，用于检测 PointerUp 是否是 "click"
+  const [lastDownPos, setLastDownPos] = useState(null); 
+
+  // 网格配置
+  const [gridRows, setGridRows] = useState(1);
+  const [gridCols, setGridCols] = useState(5);
+  // 核心：存储被排除的单元格索引 (0 到 total-1)
+  const [excludedCells, setExcludedCells] = useState([]); 
+  
+  // 抽奖配置
+  const [winnerCount, setWinnerCount] = useState(1);
+  const [winners, setWinners] = useState([]);
+  const [isAnimating, setIsAnimating] = useState(false);
+  // 新增：动画时长控制 (单位：秒)
+  const [animationDurationSec, setAnimationDurationSec] = useState(3);
+
+  const canvasRef = useRef(null);
+  const containerRef = useRef(null);
+  
+  // 拖动阈值
+  const DRAG_THRESHOLD = 5;
+  // 动画步骤数 (用于计算每一步的间隔时间)
+  const ANIMATION_STEPS = 30;
+
+  // 1. 加载图片
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          setImage(img);
+          setSelection(null);
+          setWinners([]);
+          setExcludedCells([]); 
+          setGridRows(1);
+          setGridCols(5);
+        };
+        img.src = event.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // 2. 坐标转换核心工具：将屏幕(DOM)坐标转换为画布内部(Image)坐标
+  const getCanvasPoint = (e) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    // 处理触摸和鼠标事件的客户端坐标
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY
+    };
+  };
+
+  // 3. 碰撞检测 
+  const getHitTest = (x, y) => {
+    if (!selection) return { type: 'bg' };
+
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const tolerance = 15 * scaleX; 
+
+    const { x: sx, y: sy, w, h } = selection;
+    
+    // 检查8个控制点
+    const handles = [
+      { name: 'tl', x: sx, y: sy },
+      { name: 't',  x: sx + w / 2, y: sy },
+      { name: 'tr', x: sx + w, y: sy },
+      { name: 'r',  x: sx + w, y: sy + h / 2 },
+      { name: 'br', x: sx + w, y: sy + h },
+      { name: 'b',  x: sx + w / 2, y: sy + h },
+      { name: 'bl', x: sx, y: sy + h },
+      { name: 'l',  x: sx, y: sy + h / 2 },
+    ];
+
+    for (let handle of handles) {
+      if (Math.abs(x - handle.x) < tolerance && Math.abs(y - handle.y) < tolerance) {
+        return { type: 'handle', name: handle.name };
+      }
+    }
+
+    // 检查是否在矩形内部 (用于移动/切换)
+    if (x >= sx && x <= sx + w && y >= sy && y <= sy + h) {
+      return { type: 'inside' };
+    }
+
+    return { type: 'bg' };
+  };
+  
+  // 4. 切换单元格排除状态
+  const toggleCellExclusion = useCallback((x, y) => {
+    if (!selection || isAnimating) return;
+
+    const { x: sx, y: sy, w, h } = selection;
+    const cellW = w / gridCols;
+    const cellH = h / gridRows;
+
+    // 确保点击在选区内部
+    if (x < sx || x > sx + w || y < sy || y > sy + h) return;
+
+    const col = Math.floor((x - sx) / cellW);
+    const row = Math.floor((y - sy) / cellH);
+    const index = row * gridCols + col;
+    
+    if (index < 0 || index >= gridRows * gridCols) return;
+
+    setExcludedCells(prev => {
+      if (prev.includes(index)) {
+        return prev.filter(i => i !== index); // 包含 -> 移除 (恢复)
+      } else {
+        return [...prev, index]; // 不包含 -> 添加 (排除)
+      }
+    });
+    setWinners([]); // 排除项改变，重置中奖结果
+  }, [selection, isAnimating, gridRows, gridCols]);
+
+  // 5. 指针事件处理
+  const handlePointerDown = (e) => {
+    if (!image) return;
+    const pos = getCanvasPoint(e);
+    const hit = getHitTest(pos.x, pos.y);
+    
+    // 记录屏幕起始位置，用于判断是否为"点击"
+    setLastDownPos({ x: e.clientX, y: e.clientY }); 
+
+    if (hit.type === 'handle') {
+      // 调整大小，必须清空排除项
+      setInteraction({ isDragging: true, mode: 'resize', activeHandle: hit.name, startPos: pos, initialSelection: { ...selection } });
+      setWinners([]); setExcludedCells([]); 
+    } else if (hit.type === 'inside') {
+      // 标记为等待移动/点击，不立即清空排除项
+      setInteraction({ isDragging: true, mode: 'pending_move', activeHandle: null, startPos: pos, initialSelection: { ...selection } });
+    } else {
+      // 创建新选区，必须清空排除项
+      setInteraction({ isDragging: true, mode: 'create', activeHandle: null, startPos: pos, initialSelection: null });
+      setSelection({ x: pos.x, y: pos.y, w: 0, h: 0 });
+      setWinners([]); setExcludedCells([]); 
+    }
+  };
+
+  const handlePointerMove = (e) => {
+    if (!image || !interaction.isDragging) return;
+    
+    e.preventDefault();
+    const pos = getCanvasPoint(e);
+    const { mode, startPos, initialSelection, activeHandle } = interaction;
+    const dx = pos.x - startPos.x;
+    const dy = pos.y - startPos.y;
+    
+    // 鼠标光标样式更新 (非拖拽时) 
+    const canvas = canvasRef.current;
+    if (canvas) {
+        const hit = getHitTest(pos.x, pos.y);
+        const cursorMap = {
+            tl: 'nw-resize', t: 'n-resize', tr: 'ne-resize', r: 'e-resize',
+            br: 'se-resize', b: 's-resize', bl: 'sw-resize', l: 'w-resize'
+        };
+        canvas.style.cursor = hit.type === 'handle' ? cursorMap[hit.name] : 
+                               (hit.type === 'inside' ? 'pointer' : 'crosshair');
+    }
+
+    // 核心修复逻辑：Pending Move -> Move
+    if (mode === 'pending_move') {
+        // 使用屏幕坐标判断是否超过阈值 (避免缩放影响)
+        const clientDx = lastDownPos ? Math.abs(e.clientX - lastDownPos.x) : 0;
+        const clientDy = lastDownPos ? Math.abs(e.clientY - lastDownPos.y) : 0;
+
+        if (clientDx > DRAG_THRESHOLD || clientDy > DRAG_THRESHOLD) {
+            // 超过阈值，确定是拖动，立即清空排除项
+            setInteraction(prev => ({ ...prev, mode: 'move' }));
+            setWinners([]); 
+            setExcludedCells([]); 
+        } else {
+            // 还在阈值内，不执行任何操作，继续等待
+            return;
+        }
+    }
+    
+    // 执行移动逻辑
+    if (mode === 'create') {
+      setSelection({
+        x: Math.min(startPos.x, pos.x),
+        y: Math.min(startPos.y, pos.y),
+        w: Math.abs(dx),
+        h: Math.abs(dy)
+      });
+    } else if (mode === 'move' && initialSelection) {
+      let newX = initialSelection.x + dx;
+      let newY = initialSelection.y + dy;
+      // 限制不超出边界
+      newX = Math.max(0, Math.min(newX, image.naturalWidth - initialSelection.w));
+      newY = Math.max(0, Math.min(newY, image.naturalHeight - initialSelection.h));
+
+      setSelection({ ...initialSelection, x: newX, y: newY });
+    } else if (mode === 'resize' && initialSelection) {
+      // 调整大小逻辑 
+      const s = { ...initialSelection };
+      let newX = s.x, newY = s.y, newW = s.w, newH = s.h;
+      const MIN_SIZE = 10; 
+
+      if (activeHandle.includes('l')) {
+        newX = Math.min(s.x + dx, s.x + s.w - MIN_SIZE);
+        newX = Math.max(0, newX);
+        newW = s.w - (newX - s.x);
+      }
+      if (activeHandle.includes('r')) {
+        newW = Math.max(MIN_SIZE, s.w + dx);
+        newW = Math.min(newW, image.naturalWidth - s.x);
+      }
+      if (activeHandle.includes('t')) {
+        newY = Math.min(s.y + dy, s.y + s.h - MIN_SIZE);
+        newY = Math.max(0, newY);
+        newH = s.h - (newY - s.y);
+      }
+      if (activeHandle.includes('b')) {
+        newH = Math.max(MIN_SIZE, s.h + dy);
+        newH = Math.min(newH, image.naturalHeight - s.y);
+      }
+      setSelection({ x: newX, y: newY, w: newW, h: newH });
+    }
+  };
+
+  const handlePointerUp = (e) => {
+    // 1. Click Detection (用于切换排除状态)
+    const currentPos = { x: e.clientX, y: e.clientY };
+    const dx = lastDownPos ? Math.abs(currentPos.x - lastDownPos.x) : 100;
+    const dy = lastDownPos ? Math.abs(currentPos.y - lastDownPos.y) : 100;
+    const isClick = dx < DRAG_THRESHOLD && dy < DRAG_THRESHOLD; // 使用相同的阈值判断是否为点击
+
+    // 如果模式是 pending_move (意味着没有被 Move 逻辑拦截)，且最终结果是 Click，则切换排除状态
+    if (isClick && selection && interaction.mode === 'pending_move') {
+        const canvasPos = getCanvasPoint(e); 
+        const hit = getHitTest(canvasPos.x, canvasPos.y);
+        
+        // 只有在选区内部发生点击时，才切换排除状态
+        if (hit.type === 'inside') {
+            toggleCellExclusion(canvasPos.x, canvasPos.y);
+        }
+    }
+    
+    // 2. Interaction Reset
+    setInteraction({ ...interaction, isDragging: false, mode: 'none' });
+    if (canvasRef.current) canvasRef.current.style.cursor = 'crosshair';
+    
+    // 3. Final Check for selection validity 
+    if (selection && (interaction.mode === 'create' || interaction.mode === 'resize') && (selection.w < 5 || selection.h < 5)) {
+        setSelection(null);
+    }
+  };
+
+
+  // 6. 渲染 Canvas
+  useEffect(() => {
+    if (!canvasRef.current || !image) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+
+    // Canvas 内部尺寸始终等于图片实际尺寸
+    if (canvas.width !== image.naturalWidth || canvas.height !== image.naturalHeight) {
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+    }
+
+    // 6.1 绘制背景图
+    ctx.drawImage(image, 0, 0);
+
+    if (selection) {
+      const { x, y, w, h } = selection;
+      const scaleFactor = canvas.width / 1000; // 用于缩放线条和点的大小
+
+      // 6.2 黑色半透明遮罩 (挖空中间)
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.beginPath();
+      ctx.rect(0, 0, canvas.width, canvas.height); 
+      ctx.rect(x + w, y, -w, h); 
+      ctx.fill();
+
+      // 6.3 选区边框
+      ctx.strokeStyle = '#00ff00';
+      ctx.lineWidth = 2 * scaleFactor;
+      ctx.strokeRect(x, y, w, h);
+
+      // 6.4 绘制网格
+      const cellW = w / gridCols;
+      const cellH = h / gridRows;
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.lineWidth = 1 * scaleFactor;
+      
+      for (let i = 1; i < gridCols; i++) {
+        ctx.moveTo(x + i * cellW, y); ctx.lineTo(x + i * cellW, y + h);
+      }
+      for (let i = 1; i < gridRows; i++) {
+        ctx.moveTo(x, y + i * cellH); ctx.lineTo(x + w, y + i * cellH);
+      }
+      ctx.stroke();
+
+      // 6.5 绘制排除的格子 (灰色块 + X)
+      excludedCells.forEach(index => {
+        const row = Math.floor(index / gridCols);
+        const col = index % gridCols;
+        const boxX = x + col * cellW;
+        const boxY = y + row * cellH;
+
+        ctx.fillStyle = 'rgba(100, 100, 100, 0.7)'; // 灰色半透明
+        ctx.fillRect(boxX, boxY, cellW, cellH);
+
+        // 绘制白色 'X' 
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 4 * scaleFactor;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        const padding = 10 * scaleFactor;
+        ctx.moveTo(boxX + padding, boxY + padding);
+        ctx.lineTo(boxX + cellW - padding, boxY + cellH - padding);
+        ctx.moveTo(boxX + cellW - padding, boxY + padding);
+        ctx.lineTo(boxX + padding, boxY + cellH - padding);
+        ctx.stroke();
+        ctx.lineCap = 'butt';
+      });
+
+      // 6.6 绘制 8 个控制点
+      if (!isAnimating) {
+        const handleRadius = 6 * scaleFactor; 
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1;
+        
+        const handles = [
+          [x, y], [x + w/2, y], [x + w, y],
+          [x + w, y + h/2], [x + w, y + h],
+          [x + w/2, y + h], [x, y + h], [x, y + h/2]
+        ];
+
+        handles.forEach(([hx, hy]) => {
+          ctx.beginPath();
+          ctx.arc(hx, hy, handleRadius, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        });
+      }
+
+      // 6.7 绘制中奖结果 (红色框)
+      if (winners.length > 0) {
+        ctx.lineWidth = 5 * scaleFactor;
+        ctx.strokeStyle = '#ef4444'; // Red
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 10;
+
+        winners.forEach(winnerIndex => {
+          const row = Math.floor(winnerIndex / gridCols);
+          const col = winnerIndex % gridCols;
+          const boxX = x + col * cellW;
+          const boxY = y + row * cellH;
+          ctx.strokeRect(boxX, boxY, cellW, cellH);
+        });
+        ctx.shadowBlur = 0;
+      }
+    }
+  }, [image, selection, gridRows, gridCols, winners, isAnimating, excludedCells]);
+
+  // 7. 抽奖逻辑
+  const totalPotentialAvatars = gridRows * gridCols;
+  const totalAvatars = totalPotentialAvatars - excludedCells.length;
+
+  const handleDraw = () => {
+    if (!selection) return;
+    if (winnerCount > totalAvatars) {
+        console.error(`抽奖人数 (${winnerCount}) 不能多于有效头像总数 (${totalAvatars})`);
+        return;
+    }
+    
+    setIsAnimating(true);
+    
+    // 找出所有未被排除的有效索引
+    const allIndices = Array.from({ length: totalPotentialAvatars }, (_, i) => i);
+    const includedIndices = allIndices.filter(i => !excludedCells.includes(i));
+    
+    // 根据用户设置的时长计算间隔时间
+    const totalDurationMs = animationDurationSec * 1000;
+    // 最小间隔时间确保不会卡住，并且总步数保持在 ANIMATION_STEPS
+    const delay = Math.max(50, totalDurationMs / ANIMATION_STEPS);
+    
+    let count = 0;
+    const interval = setInterval(() => {
+      // 动画效果：随机闪烁
+      const availableIndices = [...includedIndices];
+      const tempWinners = [];
+      
+      for (let i = 0; i < winnerCount; i++) {
+          if (availableIndices.length === 0) break;
+          const randIndex = Math.floor(Math.random() * availableIndices.length);
+          tempWinners.push(availableIndices[randIndex]);
+          availableIndices.splice(randIndex, 1);
+      }
+      setWinners(tempWinners);
+      count++;
+      
+      // 当达到预设的动画步数时停止
+      if (count >= ANIMATION_STEPS) {
+        clearInterval(interval);
+        // 最终结果：Fisher-Yates 洗牌算法
+        const indicesFinal = [...includedIndices]; 
+        for (let i = indicesFinal.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [indicesFinal[i], indicesFinal[j]] = [indicesFinal[j], indicesFinal[i]];
+        }
+        setWinners(indicesFinal.slice(0, winnerCount));
+        setIsAnimating(false);
+      }
+    }, delay);
+  };
+
+  const reset = () => {
+      setImage(null);
+      setSelection(null);
+      setWinners([]);
+      setExcludedCells([]);
+  }
+
+  // 处理网格数量变化并重置排除列表的统一函数
+  const handleGridChange = (setter, value) => {
+    setter(Math.max(1, Number(value)));
+    setExcludedCells([]); 
+    setWinners([]);
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
+      {/* Header */}
+      <header className="bg-white shadow-sm p-4 sticky top-0 z-20">
+        <div className="max-w-6xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Trophy className="text-red-500 w-6 h-6" />
+            <h1 className="text-xl font-bold bg-gradient-to-r from-red-500 to-orange-500 bg-clip-text text-transparent">
+              点赞抽奖助手 V8
+            </h1>
+          </div>
+          {image && (
+             <button onClick={reset} className="text-sm text-gray-500 flex items-center gap-1 hover:text-red-500 transition-colors">
+                 <X className="w-4 h-4"/> 重选图片
+             </button>
+          )}
+        </div>
+      </header>
+
+      <main className="flex-1 flex flex-col items-center p-4 gap-6 max-w-6xl mx-auto w-full">
+        
+        {/* Upload */}
+        {!image && (
+          <div className="w-full max-w-lg mt-10">
+            <label className="flex flex-col items-center justify-center w-full h-64 border-2 border-dashed border-gray-300 rounded-2xl cursor-pointer bg-white hover:bg-gray-50 hover:border-blue-400 transition-all group">
+              <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                <div className="bg-blue-50 p-4 rounded-full mb-4 group-hover:scale-110 transition-transform">
+                    <Upload className="w-8 h-8 text-blue-500" />
+                </div>
+                <p className="mb-2 text-lg font-semibold text-gray-700">点击上传朋友圈截图</p>
+                <p className="text-xs text-gray-500">支持长图，已修复显示不完整问题</p>
+              </div>
+              <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+            </label>
+          </div>
+        )}
+
+        {/* Workspace */}
+        {image && (
+          <div className="flex flex-col lg:flex-row gap-6 w-full animate-fade-in items-start">
+            
+            {/* Canvas Area */}
+            <div className="flex-1 w-full bg-gray-900 rounded-lg shadow-lg overflow-hidden flex flex-col border border-gray-700">
+              <div className="bg-gray-800 text-gray-400 px-4 py-2 text-xs flex justify-between items-center border-b border-gray-700">
+                  <span className="flex items-center gap-2"><MousePointer2 className="w-3 h-3"/> 提示: 点击网格 **即可** 排除空白位 (X 标记)</span>
+                  <span>图片尺寸: {image.naturalWidth} x {image.naturalHeight} px</span>
+              </div>
+              <div 
+                ref={containerRef}
+                className="relative w-full overflow-x-auto touch-none"
+              >
+                {!selection && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10 bg-black/10">
+                        <div className="bg-black/70 text-white px-4 py-2 rounded-full text-sm flex items-center gap-2 animate-bounce">
+                            <MousePointer2 className="w-4 h-4" />
+                            请在图片上框选点赞头像区域 (点击并拖动)
+                        </div>
+                    </div>
+                )}
+                <canvas
+                  ref={canvasRef}
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  onPointerLeave={handlePointerUp}
+                  className="block mx-auto"
+                  style={{ width: '100%', height: 'auto' }} 
+                />
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div className="w-full lg:w-80 flex flex-col gap-4 shrink-0">
+              
+              {/* Grid Control */}
+              <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
+                <div className="flex items-center gap-2 mb-4 text-blue-600">
+                    <Grid3X3 className="w-5 h-5" />
+                    <h2 className="font-bold">1. 识别并调整数量</h2>
+                </div>
+                
+                {selection ? (
+                    <div className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                             <div>
+                                <span className="text-xs text-gray-500 block mb-1">行数 (Rows)</span>
+                                <input 
+                                    type="number" min="1" max="50"
+                                    value={gridRows} 
+                                    onChange={(e) => handleGridChange(setGridRows, e.target.value)}
+                                    className="w-full border p-2 rounded text-center font-bold font-mono"
+                                />
+                             </div>
+                             <div>
+                                <span className="text-xs text-gray-500 block mb-1">列数 (Cols)</span>
+                                <input 
+                                    type="number" min="1" max="30"
+                                    value={gridCols} 
+                                    onChange={(e) => handleGridChange(setGridCols, e.target.value)}
+                                    className="w-full border p-2 rounded text-center font-bold font-mono"
+                                />
+                             </div>
+                        </div>
+
+                        {/* 增加了 space-y-4 来分隔滑块 */}
+                        <div className="space-y-4 pt-2 border-t border-gray-100">
+                             <div className="space-y-1">
+                                <span className="text-xs text-gray-500 block">微调行数</span>
+                                <input 
+                                    type="range" min="1" max="20" value={gridRows} 
+                                    onChange={(e) => handleGridChange(setGridRows, e.target.value)}
+                                    className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500 block"
+                                />
+                             </div>
+                             <div className="space-y-1">
+                                <span className="text-xs text-gray-500 block">微调列数</span>
+                                <input 
+                                    type="range" min="1" max="15" value={gridCols} 
+                                    onChange={(e) => handleGridChange(setGridCols, e.target.value)}
+                                    className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500 block"
+                                />
+                             </div>
+                        </div>
+                        
+                        <div className="bg-blue-50 text-blue-700 p-3 rounded-lg text-sm">
+                            <div className="flex justify-between items-center font-bold">
+                                <span>有效头像总数：</span>
+                                <span className="text-xl font-extrabold">{totalAvatars}</span>
+                            </div>
+                            {excludedCells.length > 0 && (
+                                <div className="mt-1 text-xs text-blue-500 flex items-center gap-1">
+                                    <MinusCircle className="w-3 h-3"/> 已排除 {excludedCells.length} 个空白位
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                ) : (
+                    <div className="text-sm text-gray-400 italic text-center py-8 bg-gray-50 rounded-lg border border-dashed">
+                        请在左侧图片上框选区域
+                    </div>
+                )}
+              </div>
+
+              {/* Lottery Control */}
+              <div className={`bg-white p-5 rounded-xl shadow-sm border border-gray-100 transition-opacity ${!selection ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
+                <div className="flex items-center gap-2 mb-4 text-red-600">
+                    <Shuffle className="w-5 h-5" />
+                    <h2 className="font-bold">2. 随机抽奖</h2>
+                </div>
+
+                <div className="space-y-4">
+                    {/* Winner Count */}
+                    <div className="flex items-center justify-between bg-gray-50 p-2 rounded-lg border border-gray-100">
+                        <span className="text-sm text-gray-600 pl-2">中奖人数</span>
+                        <div className="flex items-center gap-1">
+                            <button 
+                                onClick={() => setWinnerCount(Math.max(1, winnerCount - 1))}
+                                className="w-8 h-8 rounded bg-white border hover:bg-gray-100 font-bold"
+                            >-</button>
+                            <span className="w-10 text-center font-mono font-bold">{winnerCount}</span>
+                            <button 
+                                onClick={() => setWinnerCount(Math.min(totalAvatars, winnerCount + 1))}
+                                disabled={totalAvatars === 0}
+                                className="w-8 h-8 rounded bg-white border hover:bg-gray-100 font-bold disabled:opacity-50"
+                            >+</button>
+                        </div>
+                    </div>
+
+                    {/* Animation Duration Control */}
+                    <div className="bg-gray-50 p-3 rounded-lg border border-gray-100 space-y-2">
+                        <div className="flex items-center justify-between">
+                            <span className="text-sm text-gray-600 flex items-center gap-1"><Clock className="w-4 h-4 text-red-500"/> 动画时长 (秒)</span>
+                            <input 
+                                type="number" 
+                                min="1" max="10" step="0.5"
+                                value={animationDurationSec}
+                                onChange={(e) => setAnimationDurationSec(Math.max(1, Math.min(10, Number(e.target.value))))}
+                                className="w-12 border p-1 rounded text-center font-mono font-bold text-sm"
+                            />
+                        </div>
+                         <input 
+                            type="range" min="1" max="10" step="0.5" value={animationDurationSec} 
+                            onChange={(e) => setAnimationDurationSec(Number(e.target.value))}
+                            className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-red-500 block"
+                        />
+                    </div>
+
+                    {/* Draw Button */}
+                    <button
+                        onClick={handleDraw}
+                        disabled={isAnimating || !selection || totalAvatars === 0 || winnerCount === 0}
+                        className={`w-full py-3 rounded-xl font-bold text-white shadow-lg transform transition-all flex items-center justify-center gap-2
+                            ${isAnimating 
+                                ? 'bg-gray-400 cursor-wait scale-95' 
+                                : 'bg-gradient-to-r from-red-500 to-pink-600 hover:scale-105 hover:shadow-red-200 active:scale-95'
+                            }
+                        `}
+                    >
+                        {isAnimating ? <RefreshCcw className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
+                        {isAnimating ? '正在计算...' : '开始抽奖'}
+                    </button>
+                    
+                    {/* Winners Display */}
+                    {winners.length > 0 && !isAnimating && (
+                        <div className="bg-red-50 border border-red-100 p-3 rounded-lg animate-fade-in max-h-40 overflow-y-auto">
+                            <p className="text-xs text-gray-500 mb-2 font-medium">中奖名单 (位置序号):</p>
+                            <div className="flex flex-wrap gap-2">
+                                {winners.map(w => (
+                                    <span key={w} className="bg-white border border-red-200 text-red-600 font-mono font-bold px-2 py-1 rounded text-sm shadow-sm flex items-center">
+                                        <Trophy className="w-3 h-3 mr-1 opacity-50"/> #{w + 1}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+              </div>
+
+            </div>
+          </div>
+        )}
+      </main>
+
+      <style jsx global>{`
+          @keyframes fade-in {
+              from { opacity: 0; transform: translateY(10px); }
+              to { opacity: 1; transform: translateY(0); }
+          }
+          .animate-fade-in { animation: fade-in 0.3s ease-out forwards; }
+      `}</style>
+    </div>
+  );
+}

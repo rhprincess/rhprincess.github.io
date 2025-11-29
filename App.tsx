@@ -143,6 +143,7 @@ const App: React.FC = () => {
 
   // Mobile UI State
   const [isMobileSettingsOpen, setIsMobileSettingsOpen] = useState(false);
+  const [isMobileResultsOpen, setIsMobileResultsOpen] = useState(false);
   const [mobileTab, setMobileTab] = useState<'images' | 'settings'>('settings');
 
   // Computed
@@ -431,6 +432,7 @@ const App: React.FC = () => {
 
     // Close mobile drawer if open
     setIsMobileSettingsOpen(false);
+    setIsMobileResultsOpen(false);
 
     // Clear previous winners
     setImages(prev => prev.map(img => ({ ...img, winners: [] })));
@@ -479,6 +481,7 @@ const App: React.FC = () => {
         
         setTempFlasher(null);
         setIsLotteryRunning(false);
+        setIsMobileResultsOpen(true); // Open results on mobile when done
       }
     };
 
@@ -659,16 +662,31 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col md:flex-row h-screen w-full bg-gray-100 overflow-hidden font-sans text-gray-800">
+      <style>
+        {`
+          .no-scrollbar::-webkit-scrollbar {
+            display: none;
+          }
+          .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+          }
+        `}
+      </style>
       
       {/* Canvas Area (Fullscreen on Mobile, Left side on Desktop) */}
       <div className="absolute inset-0 md:relative md:flex-1 bg-gray-200 overflow-hidden flex flex-col z-0">
-        {/* Floating Toolbar (Top Center) */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-white/90 backdrop-blur shadow-lg rounded-full px-4 py-2 flex gap-2 items-center border border-gray-200 pointer-events-auto">
+        {/* Floating Toolbar (Top) */}
+        <div className="
+          z-20 flex gap-2 items-center pointer-events-auto
+          fixed top-0 left-0 right-0 bg-white/90 backdrop-blur border-b border-gray-200 px-4 py-3 overflow-x-auto no-scrollbar
+          md:absolute md:top-4 md:left-1/2 md:-translate-x-1/2 md:w-auto md:bg-white/90 md:rounded-full md:shadow-lg md:border md:justify-center md:border-gray-200 md:py-2
+        ">
            {/* Undo/Redo Buttons */}
            <button 
              onClick={undo}
              disabled={history.length === 0 || isLotteryRunning}
-             className={`p-2 rounded-full transition-colors ${history.length === 0 || isLotteryRunning ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-600'}`}
+             className={`p-2 rounded-full transition-colors flex-shrink-0 ${history.length === 0 || isLotteryRunning ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-600'}`}
              title="撤销 (Ctrl+Z)"
            >
              <Undo2 size={18} />
@@ -676,36 +694,36 @@ const App: React.FC = () => {
            <button 
              onClick={redo}
              disabled={future.length === 0 || isLotteryRunning}
-             className={`p-2 rounded-full transition-colors ${future.length === 0 || isLotteryRunning ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-600'}`}
+             className={`p-2 rounded-full transition-colors flex-shrink-0 ${future.length === 0 || isLotteryRunning ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-600'}`}
              title="重做 (Ctrl+Shift+Z)"
            >
              <Redo2 size={18} />
            </button>
-           <div className="w-px h-6 bg-gray-300 mx-1"></div>
+           <div className="w-px h-6 bg-gray-300 mx-1 flex-shrink-0"></div>
 
            <button 
             onClick={() => setIsPanningMode(false)}
-            className={`p-2 rounded-full transition-colors ${!isPanningMode ? 'bg-wechat text-white' : 'hover:bg-gray-100 text-gray-600'}`}
+            className={`p-2 rounded-full transition-colors flex-shrink-0 ${!isPanningMode ? 'bg-wechat text-white' : 'hover:bg-gray-100 text-gray-600'}`}
             title="选择模式"
           >
             <MousePointer2 size={18} />
           </button>
           <button 
             onClick={() => setIsPanningMode(true)}
-            className={`p-2 rounded-full transition-colors ${isPanningMode ? 'bg-wechat text-white' : 'hover:bg-gray-100 text-gray-600'}`}
+            className={`p-2 rounded-full transition-colors flex-shrink-0 ${isPanningMode ? 'bg-wechat text-white' : 'hover:bg-gray-100 text-gray-600'}`}
             title="移动视图 (空格键按住)"
           >
             <Move size={18} />
           </button>
-          <div className="w-px h-6 bg-gray-300 mx-1"></div>
-          <button onClick={() => setScale(s => Math.min(s + 0.05, 5))} className="p-2 hover:bg-gray-100 rounded-full text-gray-600">
+          <div className="w-px h-6 bg-gray-300 mx-1 flex-shrink-0"></div>
+          <button onClick={() => setScale(s => Math.min(s + 0.05, 5))} className="p-2 hover:bg-gray-100 rounded-full text-gray-600 flex-shrink-0">
             <ZoomIn size={18} />
           </button>
-          <span className="text-xs font-medium w-12 text-center">{Math.round(scale * 100)}%</span>
-          <button onClick={() => setScale(s => Math.max(s - 0.05, 0.2))} className="p-2 hover:bg-gray-100 rounded-full text-gray-600">
+          <span className="text-xs font-medium w-12 text-center flex-shrink-0">{Math.round(scale * 100)}%</span>
+          <button onClick={() => setScale(s => Math.max(s - 0.05, 0.2))} className="p-2 hover:bg-gray-100 rounded-full text-gray-600 flex-shrink-0">
             <ZoomOut size={18} />
           </button>
-           <button onClick={() => { if(activeImageId) zoomToImage(activeImageId); else { setScale(1); setPan({x:0, y:0}); } }} className="ml-2 text-xs text-wechat font-medium hover:underline">
+           <button onClick={() => { if(activeImageId) zoomToImage(activeImageId); else { setScale(1); setPan({x:0, y:0}); } }} className="ml-2 text-xs text-wechat font-medium hover:underline flex-shrink-0 whitespace-nowrap">
             重置
           </button>
         </div>
@@ -728,6 +746,7 @@ const App: React.FC = () => {
                   onSelectImage={handleSelectImage}
                   onInteractionStart={saveHistory}
                   scale={scale}
+                  setScale={setScale} // Pass setScale for pinch zoom
                   pan={pan}
                   setPan={setPan}
                   isPanningMode={isPanningMode}
@@ -742,13 +761,10 @@ const App: React.FC = () => {
       {/* --- Desktop Sidebar --- */}
       <div className="hidden md:flex w-80 bg-white border-l border-gray-200 flex-col z-10 shadow-xl relative h-full">
         <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
-          <h1 className="font-bold text-lg text-gray-800 flex items-center gap-2">
-            <Trophy className="text-wechat" size={20} />
-            抽奖助手
+          <h1 className="font-bold text-lg text-gray-800 flex items-center justify-between w-full">
+             <span className="flex items-center gap-2"><Trophy className="text-wechat" size={20} /> 抽奖助手</span>
+             <span className="text-xs bg-wechat-light text-wechat-dark px-2 py-1 rounded font-medium">Pro</span>
           </h1>
-          <div className="text-xs bg-wechat-light text-wechat-dark px-2 py-1 rounded font-medium">
-             Pro
-          </div>
         </div>
 
         {/* Scrollable Middle Content */}
@@ -797,16 +813,16 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* --- Mobile Bottom Bar & Drawer --- */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 z-30">
-        {/* Results Overlay (Mobile) - Only if winners exist */}
-        {globalWinners.length > 0 && !isLotteryRunning && !isMobileSettingsOpen && (
-           <div className="bg-white/95 backdrop-blur border-t border-gray-200 p-3 max-h-32 overflow-y-auto">
+      {/* --- Mobile Bottom Bar --- */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 flex flex-col justify-end pointer-events-none">
+        {/* Results Overlay (Mobile) - Toggleable */}
+        {globalWinners.length > 0 && !isLotteryRunning && isMobileResultsOpen && (
+           <div className="bg-white/95 backdrop-blur border-t border-gray-200 p-3 max-h-40 overflow-y-auto animate-slide-up shadow-sm pointer-events-auto">
               <div className="flex items-center justify-between mb-2">
                  <h3 className="font-bold text-gray-700 text-xs flex items-center gap-2">
-                   <CheckCircle2 size={14} className="text-wechat" /> 中奖名单
+                   <CheckCircle2 size={14} className="text-wechat" /> 中奖名单 ({globalWinners.length})
                  </h3>
-                 <button onClick={() => setGlobalWinners([])} className="text-xs text-gray-400">关闭</button>
+                 <button onClick={() => setIsMobileResultsOpen(false)} className="text-xs text-gray-400">收起</button>
               </div>
               <div className="flex flex-wrap gap-2">
                  {globalWinners.map((w, i) => (
@@ -819,8 +835,8 @@ const App: React.FC = () => {
         )}
 
         {/* Mobile Control Bar */}
-        <div className="bg-white border-t border-gray-200 px-4 py-2 flex items-center justify-between shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
-           <div className="flex gap-4">
+        <div className="bg-white border-t border-gray-200 px-4 py-2 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] flex items-center justify-between shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] pointer-events-auto">
+           <div className="flex gap-5">
               <button 
                 onClick={() => { setIsMobileSettingsOpen(true); setMobileTab('images'); }}
                 className="flex flex-col items-center text-gray-500 hover:text-wechat"
@@ -835,30 +851,40 @@ const App: React.FC = () => {
                 <Settings2 size={20} />
                 <span className="text-[10px]">设置</span>
               </button>
+              {globalWinners.length > 0 && (
+                <button 
+                  onClick={() => setIsMobileResultsOpen(!isMobileResultsOpen)}
+                  className={`flex flex-col items-center ${isMobileResultsOpen ? 'text-wechat' : 'text-gray-500 hover:text-wechat'}`}
+                >
+                  <Trophy size={20} />
+                  <span className="text-[10px]">结果</span>
+                </button>
+              )}
            </div>
 
            <button 
              onClick={startLottery} 
              disabled={isLotteryRunning || totalEligibleCount === 0}
-             className={`px-6 py-2 rounded-full font-bold text-white text-sm flex items-center gap-2 shadow-lg
+             className={`px-6 py-2 rounded-full font-bold text-white text-sm flex items-center gap-2 shadow-md shadow-wechat/20
                ${isLotteryRunning ? 'bg-gray-400' : 'bg-wechat'}`}
            >
               {isLotteryRunning ? '...' : <Play size={16} fill="currentColor" />} 
               {isLotteryRunning ? '抽奖中' : '开始'}
            </button>
         </div>
+      </div>
 
-        {/* Mobile Drawer */}
-        {isMobileSettingsOpen && (
-          <div className="absolute bottom-0 left-0 right-0 z-40 flex flex-col justify-end h-[80vh] pointer-events-none">
+       {/* --- Mobile Drawer (Full Screen Backdrop) --- */}
+       {isMobileSettingsOpen && (
+          <div className="fixed inset-0 z-50 flex flex-col justify-end">
              {/* Backdrop */}
-             <div className="absolute inset-0 bg-black/40 pointer-events-auto" onClick={() => setIsMobileSettingsOpen(false)}></div>
+             <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsMobileSettingsOpen(false)}></div>
              
              {/* Drawer Content */}
-             <div className="bg-white rounded-t-2xl p-4 overflow-y-auto pointer-events-auto animate-slide-up shadow-2xl relative">
-                <div className="w-12 h-1.5 bg-gray-300 rounded-full mx-auto mb-6"></div>
+             <div className="bg-white rounded-t-2xl p-4 overflow-y-auto animate-slide-up shadow-2xl relative max-h-[85vh] flex flex-col">
+                <div className="w-12 h-1.5 bg-gray-300 rounded-full mx-auto mb-4 flex-shrink-0"></div>
                 
-                <div className="flex items-center gap-4 border-b border-gray-100 mb-4">
+                <div className="flex items-center gap-4 border-b border-gray-100 mb-4 flex-shrink-0">
                    <button 
                     onClick={() => setMobileTab('images')}
                     className={`pb-2 text-sm font-bold ${mobileTab === 'images' ? 'text-wechat border-b-2 border-wechat' : 'text-gray-400'}`}
@@ -873,7 +899,7 @@ const App: React.FC = () => {
                    </button>
                 </div>
 
-                <div className="pb-10">
+                <div className="flex-1 overflow-y-auto pb-4">
                   {mobileTab === 'images' ? <ImageList /> : <SettingsPanel />}
                 </div>
 
@@ -886,7 +912,6 @@ const App: React.FC = () => {
              </div>
           </div>
         )}
-      </div>
 
     </div>
   );
@@ -901,6 +926,7 @@ interface CanvasEditorProps {
   onSelectImage: (id: string) => void;
   onInteractionStart: () => void;
   scale: number;
+  setScale: React.Dispatch<React.SetStateAction<number>>; // Added for pinch zoom
   pan: { x: number, y: number };
   setPan: React.Dispatch<React.SetStateAction<{ x: number, y: number }>>;
   isPanningMode: boolean;
@@ -916,6 +942,7 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
   onSelectImage,
   onInteractionStart,
   scale, 
+  setScale,
   pan, 
   setPan, 
   isPanningMode,
@@ -934,13 +961,20 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
   const [initialSelection, setInitialSelection] = useState<Selection | null>(null);
   const [initialPan, setInitialPan] = useState<{ x: number, y: number } | null>(null);
 
+  // Multi-touch / Pinch State
+  const activePointers = useRef<Map<number, { x: number, y: number }>>(new Map());
+  const pinchStartInfo = useRef<{
+    dist: number;
+    scale: number;
+    pan: { x: number, y: number };
+    worldPoint: { x: number, y: number };
+  } | null>(null);
+
+
   // Helper: Get world coordinates from pointer event
   const getWorldPos = (e: React.PointerEvent) => {
     if (!canvasRef.current) return { x: 0, y: 0 };
     const rect = canvasRef.current.getBoundingClientRect();
-    // Apply inverse transform
-    // screen = (world * scale) + pan
-    // world = (screen - pan) / scale
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
     const x = (screenX - pan.x) / scale;
@@ -1007,7 +1041,6 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
 
     const render = () => {
       // 1. Setup Canvas (Infinite)
-      // Actually canvas DOM size should match container for full interaction
       const cw = containerRef.current!.clientWidth;
       const ch = containerRef.current!.clientHeight;
       if (canvas.width !== cw || canvas.height !== ch) {
@@ -1192,6 +1225,37 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
   const handlePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    
+    // Add pointer for multi-touch
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // Multi-touch Pinch Check
+    if (activePointers.current.size === 2) {
+      const points = Array.from(activePointers.current.values());
+      const p1 = points[0];
+      const p2 = points[1];
+      const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+      const cx = (p1.x + p2.x) / 2;
+      const cy = (p1.y + p2.y) / 2;
+
+      // Calculate the point in World Space that is currently under the center of the pinch
+      // Screen = World * Scale + Pan  =>  World = (Screen - Pan) / Scale
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (rect) {
+        const screenX = cx - rect.left;
+        const screenY = cy - rect.top;
+        const wx = (screenX - pan.x) / scale;
+        const wy = (screenY - pan.y) / scale;
+
+        pinchStartInfo.current = {
+          dist,
+          scale, // Capture current scale at start of pinch
+          pan,   // Capture current pan at start of pinch
+          worldPoint: { x: wx, y: wy }
+        };
+      }
+      return; // Stop processing other interactions
+    }
 
     // Pan Mode
     if (isPanningMode || e.button === 1 || e.shiftKey) { 
@@ -1257,6 +1321,40 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
 
   const handlePointerMove = (e: React.PointerEvent) => {
     e.preventDefault();
+    
+    // Update pointer position for multi-touch
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // Handle Pinch Zoom
+    if (activePointers.current.size === 2 && pinchStartInfo.current) {
+      const points = Array.from(activePointers.current.values());
+      const p1 = points[0];
+      const p2 = points[1];
+      const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+      const cx = (p1.x + p2.x) / 2;
+      const cy = (p1.y + p2.y) / 2;
+
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (rect) {
+        // New Scale
+        const scaleRatio = dist / pinchStartInfo.current.dist;
+        let newScale = pinchStartInfo.current.scale * scaleRatio;
+        newScale = Math.min(Math.max(newScale, 0.1), 5); // Clamp scale
+
+        // Calculate New Pan to keep the worldPoint under the center
+        // NewPan = ScreenCenter - WorldPoint * NewScale
+        const screenX = cx - rect.left;
+        const screenY = cy - rect.top;
+        
+        const newPanX = screenX - pinchStartInfo.current.worldPoint.x * newScale;
+        const newPanY = screenY - pinchStartInfo.current.worldPoint.y * newScale;
+
+        setScale(newScale);
+        setPan({ x: newPanX, y: newPanY });
+      }
+      return; // Stop other processing
+    }
+
     const { x: wx, y: wy } = getWorldPos(e);
     const activeLayout = imageLayouts.find(l => l.id === activeImageId);
 
@@ -1338,6 +1436,17 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
 
   const handlePointerUp = (e: React.PointerEvent) => {
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    
+    // Remove pointer
+    activePointers.current.delete(e.pointerId);
+    if (activePointers.current.size < 2) {
+      pinchStartInfo.current = null;
+    }
+    
+    // If we were pinching, don't trigger clicks or other end events immediately
+    if (activePointers.current.size > 0) {
+      return; 
+    }
 
     const activeLayout = imageLayouts.find(l => l.id === activeImageId);
     

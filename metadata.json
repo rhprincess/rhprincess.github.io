@@ -1,4 +1,5 @@
 {
-  "name": "Moments Like Lottery V8",
-  "description": "A responsive, canvas-based tool for selecting areas on screenshots and running randomized lotteries with exclusion capabilities."
+  "name": "WeChat Moments Lottery",
+  "description": "A responsive tool to select winners from WeChat Moments screenshots using canvas-based grid selection and multi-image support.",
+  "requestFramePermissions": []
 }

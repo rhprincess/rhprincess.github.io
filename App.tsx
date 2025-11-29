@@ -1,73 +1,62 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { 
-  Trophy, 
   Upload, 
-  Shuffle, 
-  Settings, 
   Trash2, 
-  CheckCircle, 
   Grid3X3, 
-  Clock,
+  Users, 
+  Play, 
+  Trophy, 
+  ZoomIn, 
+  ZoomOut, 
+  Move, 
+  MousePointer2, 
+  Settings2,
+  CheckCircle2,
+  X,
   Plus,
-  Minus,
-  Move,
-  MousePointer2,
-  Palette,
   Image as ImageIcon,
-  ZoomIn,
-  RefreshCcw
+  Clock
 } from 'lucide-react';
 
 // --- Types ---
 
-interface Rect {
+interface Selection {
   x: number;
   y: number;
   w: number;
   h: number;
 }
 
-interface InteractionState {
-  mode: 'idle' | 'create' | 'resize' | 'pending_move' | 'move' | 'pan';
-  startX: number;
-  startY: number;
-  startViewX?: number;
-  startViewY?: number;
-  startRect?: Rect; 
-  handle?: string; 
-}
-
-interface StitchedImage {
+interface LotteryImage {
   id: string;
-  element: HTMLImageElement;
-  width: number;
-  height: number;
-  originalWidth: number;
-  originalHeight: number;
+  src: string;
+  naturalWidth: number;
+  naturalHeight: number;
+  selection: Selection | null;
+  gridRows: number;
+  gridCols: number;
+  excludedCells: number[]; // Index of excluded cells
+  winners: number[]; // Index of winning cells
 }
 
-// --- Constants ---
+interface WinnerResult {
+  imageId: string;
+  cellIndex: number;
+  imageIndex: number; // 1-based index for display
+}
 
-const HANDLE_SIZE = 10; 
-const TOUCH_HIT_RADIUS = 24; 
-const MIN_SELECTION = 20;
-const DRAG_THRESHOLD = 5; 
-const DEFAULT_ANIMATION_DURATION = 3;
+type InteractionMode = 'none' | 'drawing' | 'moving' | 'resizing' | 'panning';
+type ResizeHandle = 'tl' | 'tm' | 'tr' | 'mr' | 'br' | 'bm' | 'bl' | 'ml' | null;
 
-// WeChat Colors
-const THEME = {
-  primary: 'bg-[#07C160]',
-  primaryHover: 'hover:bg-[#06AD56]',
-  textPrimary: 'text-[#07C160]',
-  bgApp: 'bg-[#F2F2F2]',
-  bgPanel: 'bg-white',
-  border: 'border-gray-200',
-  textMain: 'text-[#111111]',
-  textSub: 'text-[#666666]'
-};
+const DRAG_THRESHOLD = 5;
+const HANDLE_SIZE = 8;
+const MIN_GRID_SIZE = 20;
 
 // --- Helper Functions ---
 
+const generateId = () => Math.random().toString(36).substr(2, 9);
+
+// Fisher-Yates Shuffle
 const shuffleArray = <T,>(array: T[]): T[] => {
   const arr = [...array];
   for (let i = arr.length - 1; i > 0; i--) {
@@ -77,779 +66,887 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return arr;
 };
 
-// --- Main Component ---
+// --- Components ---
 
-export default function App() {
+const App: React.FC = () => {
   // --- State ---
+  const [images, setImages] = useState<LotteryImage[]>([]);
+  const [activeImageId, setActiveImageId] = useState<string | null>(null);
+  const [winnerCount, setWinnerCount] = useState<number>(1);
+  const [animationDuration, setAnimationDuration] = useState<number>(3); // Seconds
+  const [isLotteryRunning, setIsLotteryRunning] = useState(false);
+  const [tempFlasher, setTempFlasher] = useState<{imageId: string, cellIndex: number} | null>(null);
+  const [globalWinners, setGlobalWinners] = useState<WinnerResult[]>([]);
+  const [gridColor, setGridColor] = useState<string>('rgba(255, 255, 255, 0.6)');
   
-  // Images & Canvas
-  const [images, setImages] = useState<StitchedImage[]>([]);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Canvas View State
+  const [scale, setScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanningMode, setIsPanningMode] = useState(false);
 
-  // Viewport (Zoom/Pan)
-  const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
-  const [tool, setTool] = useState<'select' | 'pan'>('select');
-
-  // Selection & Grid
-  const [selection, setSelection] = useState<Rect | null>(null);
-  const [gridRows, setGridRows] = useState(1);
-  const [gridCols, setGridCols] = useState(5);
-  const [gridColor, setGridColor] = useState('#ffffff');
+  // Computed
+  const activeImage = useMemo(() => images.find(img => img.id === activeImageId), [images, activeImageId]);
   
-  // Logic
-  const [excludedCells, setExcludedCells] = useState<Set<number>>(new Set());
-  const [winnerCount, setWinnerCount] = useState(1);
-  const [winners, setWinners] = useState<number[]>([]);
-  const [animationDuration, setAnimationDuration] = useState(DEFAULT_ANIMATION_DURATION);
-  const [isAnimating, setIsAnimating] = useState(false);
-  const [tempHighlighted, setTempHighlighted] = useState<number[]>([]); 
-
-  // Interaction
-  const interactionRef = useRef<InteractionState>({ 
-    mode: 'idle', 
-    startX: 0, 
-    startY: 0 
-  });
-  
-  // Derived
-  const totalCells = gridRows * gridCols;
-  const validCellsCount = totalCells - excludedCells.size;
-
-  // --- Effects ---
-
-  // Redraw
-  useEffect(() => {
-    drawCanvas();
-  }, [images, selection, gridRows, gridCols, excludedCells, winners, tempHighlighted, isAnimating, gridColor]);
-
-  // Clean up object URLs
-  useEffect(() => {
-    return () => {
-      images.forEach(img => {
-        if (img.element.src.startsWith('blob:')) {
-          URL.revokeObjectURL(img.element.src);
-        }
-      });
-    };
+  const totalEligibleCount = useMemo(() => {
+    return images.reduce((acc, img) => {
+      if (!img.selection) return acc;
+      const totalCells = img.gridRows * img.gridCols;
+      return acc + (totalCells - img.excludedCells.length);
+    }, 0);
   }, [images]);
 
-  // --- Core Graphics Logic ---
+  // --- Handlers ---
 
-  const drawCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || images.length === 0) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // 1. Calculate Stitched Dimensions
-    // We scale all images to the width of the widest image to create a seamless column
-    const maxWidth = Math.max(...images.map(i => i.originalWidth));
-    let totalHeight = 0;
-    const drawMeta = images.map(img => {
-      const scaleFactor = maxWidth / img.originalWidth;
-      const renderHeight = img.originalHeight * scaleFactor;
-      const y = totalHeight;
-      totalHeight += renderHeight;
-      return { img: img.element, h: renderHeight, y };
-    });
-
-    // 2. Resize Canvas
-    if (canvas.width !== maxWidth || canvas.height !== totalHeight) {
-      canvas.width = maxWidth;
-      canvas.height = totalHeight;
-    }
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // 3. Draw Images Stacked
-    drawMeta.forEach(({ img, h, y }) => {
-      ctx.drawImage(img, 0, y, maxWidth, h);
-    });
-
-    // If no selection, we stop here
-    if (!selection) return;
-
-    // 4. Draw Mask
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.beginPath();
-    ctx.rect(0, 0, canvas.width, canvas.height);
-    ctx.rect(selection.x, selection.y, selection.w, selection.h); 
-    ctx.fill('evenodd');
-
-    // 5. Draw Grid
-    const cellW = selection.w / gridCols;
-    const cellH = selection.h / gridRows;
-
-    ctx.strokeStyle = gridColor;
-    ctx.lineWidth = Math.max(1, 1 / view.scale); // Keep lines consistent visual width
-    ctx.beginPath();
-
-    // Vertical lines
-    for (let c = 1; c < gridCols; c++) {
-      const x = selection.x + c * cellW;
-      ctx.moveTo(x, selection.y);
-      ctx.lineTo(x, selection.y + selection.h);
-    }
-    // Horizontal lines
-    for (let r = 1; r < gridRows; r++) {
-      const y = selection.y + r * cellH;
-      ctx.moveTo(selection.x, y);
-      ctx.lineTo(selection.x + selection.w, y);
-    }
-    ctx.stroke();
-
-    // 6. Draw Cells
-    for (let r = 0; r < gridRows; r++) {
-      for (let c = 0; c < gridCols; c++) {
-        const index = r * gridCols + c;
-        const x = selection.x + c * cellW;
-        const y = selection.y + r * cellH;
-
-        // Draw Excluded
-        if (excludedCells.has(index)) {
-          ctx.fillStyle = 'rgba(50, 50, 50, 0.7)';
-          ctx.fillRect(x, y, cellW, cellH);
-          
-          // Draw X
-          ctx.strokeStyle = '#fff';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(x + 5, y + 5);
-          ctx.lineTo(x + cellW - 5, y + cellH - 5);
-          ctx.moveTo(x + cellW - 5, y + 5);
-          ctx.lineTo(x + 5, y + cellH - 5);
-          ctx.stroke();
-        }
-
-        // Draw Winners
-        if (winners.includes(index)) {
-          ctx.lineWidth = 6;
-          ctx.strokeStyle = '#ef4444'; 
-          ctx.strokeRect(x + 3, y + 3, cellW - 6, cellH - 6);
-          
-          const rank = winners.indexOf(index) + 1;
-          ctx.fillStyle = '#ef4444';
-          ctx.fillRect(x, y, 32, 32);
-          ctx.fillStyle = '#fff';
-          ctx.font = 'bold 20px sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(rank.toString(), x + 16, y + 16);
-        }
-
-        // Draw Animation Flash
-        if (isAnimating && tempHighlighted.includes(index)) {
-           ctx.lineWidth = 6;
-           ctx.strokeStyle = '#FBBF24'; // Amber
-           ctx.strokeRect(x + 3, y + 3, cellW - 6, cellH - 6);
-        }
-      }
-    }
-
-    // 7. Draw Selection Border
-    ctx.strokeStyle = '#07C160'; // WeChat Green
-    ctx.lineWidth = 3;
-    ctx.strokeRect(selection.x, selection.y, selection.w, selection.h);
-
-    // 8. Draw Handles
-    if (!isAnimating && tool === 'select') {
-      drawHandles(ctx, selection);
-    }
-
-  }, [images, selection, gridCols, gridRows, excludedCells, winners, isAnimating, tempHighlighted, gridColor, view.scale, tool]);
-
-  const drawHandles = (ctx: CanvasRenderingContext2D, rect: Rect) => {
-    const { x, y, w, h } = rect;
-    // Scale handle size inversely to zoom so they remain constant visual size
-    const size = HANDLE_SIZE / view.scale; 
-    
-    const points = [
-      { x, y }, { x: x + w / 2, y }, { x: x + w, y },
-      { x, y: y + h / 2 }, { x: x + w, y: y + h / 2 },
-      { x, y: y + h }, { x: x + w / 2, y: y + h }, { x: x + w, y: y + h }
-    ];
-
-    ctx.fillStyle = '#fff';
-    ctx.strokeStyle = '#07C160';
-    ctx.lineWidth = 2;
-
-    points.forEach(p => {
-      ctx.beginPath();
-      ctx.rect(p.x - size / 2, p.y - size / 2, size, size);
-      ctx.fill();
-      ctx.stroke();
-    });
-  };
-
-  // --- Input Handling ---
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      const newImages: StitchedImage[] = [];
-      let loadedCount = 0;
-
-      Array.from(files).forEach((file) => {
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const newImages: LotteryImage[] = [];
+      Array.from(e.target.files).forEach((file: File) => {
+        const src = URL.createObjectURL(file);
         const img = new Image();
-        const url = URL.createObjectURL(file);
-        img.src = url;
+        img.src = src;
         img.onload = () => {
-          newImages.push({
-            id: Math.random().toString(36).substr(2, 9),
-            element: img,
-            width: img.naturalWidth,
-            height: img.naturalHeight,
-            originalWidth: img.naturalWidth,
-            originalHeight: img.naturalHeight
+          setImages(prev => {
+            const next = [...prev, {
+              id: generateId(),
+              src,
+              naturalWidth: img.naturalWidth,
+              naturalHeight: img.naturalHeight,
+              selection: null, // Start with no selection
+              gridRows: 1,
+              gridCols: 5,
+              excludedCells: [],
+              winners: []
+            }];
+            if (!activeImageId) setActiveImageId(next[0].id);
+            return next;
           });
-          loadedCount++;
-          
-          if (loadedCount === files.length) {
-            // Sort by filename if possible? Browsers don't always give order. 
-            // We just append.
-            setImages(prev => [...prev, ...newImages]);
-            if (!selection) {
-                // Reset if first upload
-                setExcludedCells(new Set());
-                setWinners([]);
-            }
-          }
         };
       });
     }
   };
 
-  // --- Geometry Helpers ---
-
-  const getClientPos = (e: React.PointerEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0, screenX: 0, screenY: 0 };
-    
-    // getBoundingClientRect returns the TRANSFORMED dimensions (screen space)
-    const rect = canvas.getBoundingClientRect();
-    
-    // Calculate scaling factor between Rendered Pixels (Canvas internal) and Screen Pixels
-    // canvas.width is internal resolution. rect.width is screen size.
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    
-    return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
-      screenX: e.clientX,
-      screenY: e.clientY
-    };
+  const removeImage = (id: string) => {
+    setImages(prev => {
+      const next = prev.filter(img => img.id !== id);
+      if (activeImageId === id && next.length > 0) {
+        setActiveImageId(next[0].id);
+      } else if (next.length === 0) {
+        setActiveImageId(null);
+      }
+      return next;
+    });
   };
 
-  const getHandle = (x: number, y: number, rect: Rect): string | undefined => {
-    // Adjust hit radius by view scale so it's easy to hit when zoomed out
-    const scale = (canvasRef.current?.width || 1000) / (canvasRef.current?.getBoundingClientRect().width || 1000);
-    const HIT = TOUCH_HIT_RADIUS * scale;
-
-    const { x: rx, y: ry, w, h } = rect;
-    
-    if (Math.abs(x - rx) < HIT && Math.abs(y - ry) < HIT) return 'nw';
-    if (Math.abs(x - (rx + w)) < HIT && Math.abs(y - ry) < HIT) return 'ne';
-    if (Math.abs(x - rx) < HIT && Math.abs(y - (ry + h)) < HIT) return 'sw';
-    if (Math.abs(x - (rx + w)) < HIT && Math.abs(y - (ry + h)) < HIT) return 'se';
-    
-    if (Math.abs(x - (rx + w/2)) < HIT && Math.abs(y - ry) < HIT) return 'n';
-    if (Math.abs(x - (rx + w/2)) < HIT && Math.abs(y - (ry + h)) < HIT) return 's';
-    if (Math.abs(x - rx) < HIT && Math.abs(y - (ry + h/2)) < HIT) return 'w';
-    if (Math.abs(x - (rx + w)) < HIT && Math.abs(y - (ry + h/2)) < HIT) return 'e';
-
-    return undefined;
+  const updateActiveImage = (updates: Partial<LotteryImage>) => {
+    if (!activeImageId) return;
+    setImages(prev => prev.map(img => img.id === activeImageId ? { ...img, ...updates } : img));
   };
 
-  const isInside = (x: number, y: number, rect: Rect) => {
-    return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
-  };
+  // --- Lottery Logic ---
 
-  // --- Pointer Events ---
-
-  const handlePointerDown = (e: React.PointerEvent) => {
-    if (images.length === 0 || isAnimating) return;
-    const pos = getClientPos(e);
-    
-    // 0. Pan Tool Mode
-    if (tool === 'pan') {
-      interactionRef.current = {
-        mode: 'pan',
-        startX: e.clientX, // Screen coords for panning
-        startY: e.clientY,
-        startViewX: view.x,
-        startViewY: view.y
-      };
+  const startLottery = useCallback(() => {
+    if (totalEligibleCount === 0) {
+      alert("没有有效的参与者！请检查网格和排除项。");
       return;
     }
-
-    // 1. Check Handles (Resize)
-    if (selection) {
-      const handle = getHandle(pos.x, pos.y, selection);
-      if (handle) {
-        interactionRef.current = {
-          mode: 'resize',
-          startX: pos.x,
-          startY: pos.y,
-          startRect: { ...selection },
-          handle
-        };
-        return;
-      }
-      
-      // 2. Check Inside Selection (Move OR Click-to-Mark)
-      if (isInside(pos.x, pos.y, selection)) {
-        interactionRef.current = {
-          mode: 'pending_move',
-          startX: pos.screenX,
-          startY: pos.screenY,
-          startRect: { ...selection }
-        };
-        return;
-      }
-    }
-
-    // 3. Create New Selection
-    setSelection(null);
-    setExcludedCells(new Set());
-    setWinners([]);
-    interactionRef.current = {
-      mode: 'create',
-      startX: pos.x,
-      startY: pos.y
-    };
-  };
-
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (images.length === 0 || isAnimating) return;
-    const pos = getClientPos(e);
-    const state = interactionRef.current;
-
-    // Pan Logic
-    if (state.mode === 'pan') {
-      const dx = e.clientX - state.startX;
-      const dy = e.clientY - state.startY;
-      setView(v => ({
-        ...v,
-        x: (state.startViewX || 0) + dx,
-        y: (state.startViewY || 0) + dy
-      }));
-      return;
-    }
-
-    const normalize = (r: Rect) => {
-      let { x, y, w, h } = r;
-      if (w < 0) { x += w; w = Math.abs(w); }
-      if (h < 0) { y += h; h = Math.abs(h); }
-      return { x, y, w, h };
-    };
-
-    if (state.mode === 'create') {
-      const w = pos.x - state.startX;
-      const h = pos.y - state.startY;
-      setSelection(normalize({ x: state.startX, y: state.startY, w, h }));
-    } 
-    else if (state.mode === 'pending_move') {
-       const dist = Math.sqrt(Math.pow(pos.screenX - state.startX, 2) + Math.pow(pos.screenY - state.startY, 2));
-       if (dist > DRAG_THRESHOLD && state.startRect) {
-         interactionRef.current.mode = 'move';
-         interactionRef.current.startX = pos.x; 
-         interactionRef.current.startY = pos.y;
-         setExcludedCells(new Set());
-         setWinners([]);
-       }
-    }
-    else if (state.mode === 'move' && state.startRect) {
-      const dx = pos.x - state.startX;
-      const dy = pos.y - state.startY;
-      
-      let newX = state.startRect.x + dx;
-      let newY = state.startRect.y + dy;
-      
-      // Basic bounds check (using canvas size which is total image size)
-      const canvas = canvasRef.current;
-      if (canvas) {
-        newX = Math.max(0, Math.min(newX, canvas.width - state.startRect.w));
-        newY = Math.max(0, Math.min(newY, canvas.height - state.startRect.h));
-      }
-
-      setSelection({ ...state.startRect, x: newX, y: newY });
-    }
-    else if (state.mode === 'resize' && state.startRect && state.handle) {
-      setExcludedCells(new Set());
-      setWinners([]);
-
-      const dx = pos.x - state.startX;
-      const dy = pos.y - state.startY;
-      const r = { ...state.startRect };
-
-      if (state.handle.includes('e')) r.w += dx;
-      if (state.handle.includes('s')) r.h += dy;
-      if (state.handle.includes('w')) { r.x += dx; r.w -= dx; }
-      if (state.handle.includes('n')) { r.y += dy; r.h -= dy; }
-
-      if (r.w < MIN_SELECTION) r.w = MIN_SELECTION;
-      if (r.h < MIN_SELECTION) r.h = MIN_SELECTION;
-      
-      setSelection(normalize(r));
-    }
-  };
-
-  const handlePointerUp = (e: React.PointerEvent) => {
-    if (images.length === 0 || isAnimating) return;
-    const state = interactionRef.current;
     
-    if (state.mode === 'pending_move' && selection) {
-        const pos = getClientPos(e);
-        toggleCellExclusion(pos.x, pos.y);
-    }
+    // Clear previous winners
+    setImages(prev => prev.map(img => ({ ...img, winners: [] })));
+    setGlobalWinners([]);
+    setIsLotteryRunning(true);
+    setTempFlasher(null);
 
-    interactionRef.current = { mode: 'idle', startX: 0, startY: 0 };
-    
-    if (selection && (selection.w < MIN_SELECTION || selection.h < MIN_SELECTION)) {
-      setSelection(null);
-    }
-  };
-
-  const handleWheel = (e: React.WheelEvent) => {
-     // Zoom on wheel
-     const zoomSpeed = 0.001;
-     const newScale = Math.max(0.1, Math.min(5, view.scale - e.deltaY * zoomSpeed));
-     setView(v => ({ ...v, scale: newScale }));
-  };
-
-  // --- Logic Functions ---
-
-  const toggleCellExclusion = (x: number, y: number) => {
-    if (!selection) return;
-
-    const relX = x - selection.x;
-    const relY = y - selection.y;
-
-    const cellW = selection.w / gridCols;
-    const cellH = selection.h / gridRows;
-
-    const col = Math.floor(relX / cellW);
-    const row = Math.floor(relY / cellH);
-
-    if (col >= 0 && col < gridCols && row >= 0 && row < gridRows) {
-      const index = row * gridCols + col;
-      const newExcluded = new Set(excludedCells);
-      if (newExcluded.has(index)) {
-        newExcluded.delete(index);
-      } else {
-        newExcluded.add(index);
+    // Build the pool of all eligible cells
+    // Structure: { imageId, cellIndex, imageIndex }
+    const pool: { imageId: string, cellIndex: number, imageIndex: number }[] = [];
+    images.forEach((img, idx) => {
+      if (!img.selection) return;
+      const total = img.gridRows * img.gridCols;
+      for (let i = 0; i < total; i++) {
+        if (!img.excludedCells.includes(i)) {
+          pool.push({ imageId: img.id, cellIndex: i, imageIndex: idx + 1 });
+        }
       }
-      setExcludedCells(newExcluded);
-      if (winners.includes(index)) {
-        setWinners([]);
-      }
-    }
-  };
+    });
 
-  const startLottery = () => {
-    if (isAnimating || validCellsCount <= 0) return;
-    if (winnerCount > validCellsCount) {
-      alert(`Cannot pick ${winnerCount} winners from ${validCellsCount} valid cells.`);
-      return;
-    }
-
-    setIsAnimating(true);
-    setWinners([]);
-    setTempHighlighted([]);
-
-    const pool = [];
-    for (let i = 0; i < totalCells; i++) {
-      if (!excludedCells.has(i)) pool.push(i);
-    }
-
-    const durationMs = animationDuration * 1000;
     const startTime = Date.now();
-    const interval = 80; 
-    let lastUpdate = 0;
-
+    const durationMs = animationDuration * 1000;
+    
+    // Animation Loop
     const animate = () => {
       const now = Date.now();
       const elapsed = now - startTime;
-
+      
       if (elapsed < durationMs) {
-        if (now - lastUpdate > interval) {
-          const randomSelection = shuffleArray(pool).slice(0, winnerCount);
-          setTempHighlighted(randomSelection);
-          lastUpdate = now;
-        }
+        // Flash a random cell
+        const randomPick = pool[Math.floor(Math.random() * pool.length)];
+        setTempFlasher({ imageId: randomPick.imageId, cellIndex: randomPick.cellIndex });
         requestAnimationFrame(animate);
       } else {
-        const finalWinners = shuffleArray(pool).slice(0, winnerCount);
-        setWinners(finalWinners);
-        setTempHighlighted([]);
-        setIsAnimating(false);
+        // Finalize
+        const shuffledPool = shuffleArray(pool);
+        const winners = shuffledPool.slice(0, Math.min(winnerCount, pool.length));
+        
+        // Update images with winners
+        setImages(prev => prev.map(img => {
+          const imgWinners = winners
+            .filter(w => w.imageId === img.id)
+            .map(w => w.cellIndex);
+          return { ...img, winners: imgWinners };
+        }));
+        
+        setGlobalWinners(winners.map(w => ({
+          imageId: w.imageId,
+          cellIndex: w.cellIndex,
+          imageIndex: w.imageIndex
+        })));
+        
+        setTempFlasher(null);
+        setIsLotteryRunning(false);
       }
     };
 
     requestAnimationFrame(animate);
-  };
 
-  const zoomStep = (delta: number) => {
-    setView(v => ({ ...v, scale: Math.max(0.1, Math.min(5, v.scale + delta)) }));
-  };
-
-  const resetView = () => {
-    setView({ scale: 1, x: 0, y: 0 });
-  };
-
-  // --- Render ---
+  }, [images, totalEligibleCount, winnerCount, animationDuration]);
 
   return (
-    <div className={`min-h-screen flex flex-col font-sans ${THEME.bgApp} ${THEME.textMain}`}>
-      {/* Header */}
-      <header className={`bg-[#EDEDED] border-b ${THEME.border} h-16 flex items-center px-4 md:px-6 fixed w-full z-50`}>
-        <div className="flex items-center gap-3">
-          <div className="bg-[#07C160] text-white p-1.5 rounded-lg">
-            <Trophy className="w-5 h-5" />
+    <div className="flex flex-col md:flex-row h-screen w-full bg-gray-100 overflow-hidden font-sans text-gray-800">
+      
+      {/* Left/Top: Canvas Area */}
+      <div className="relative flex-1 bg-gray-200 overflow-hidden flex flex-col">
+        {/* Toolbar */}
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-white/90 backdrop-blur shadow-lg rounded-full px-4 py-2 flex gap-2 items-center border border-gray-200">
+           <button 
+            onClick={() => setIsPanningMode(false)}
+            className={`p-2 rounded-full transition-colors ${!isPanningMode ? 'bg-wechat text-white' : 'hover:bg-gray-100 text-gray-600'}`}
+            title="选择模式"
+          >
+            <MousePointer2 size={18} />
+          </button>
+          <button 
+            onClick={() => setIsPanningMode(true)}
+            className={`p-2 rounded-full transition-colors ${isPanningMode ? 'bg-wechat text-white' : 'hover:bg-gray-100 text-gray-600'}`}
+            title="移动视图 (空格键按住)"
+          >
+            <Move size={18} />
+          </button>
+          <div className="w-px h-6 bg-gray-300 mx-1"></div>
+          <button onClick={() => setScale(s => Math.min(s + 0.1, 5))} className="p-2 hover:bg-gray-100 rounded-full text-gray-600">
+            <ZoomIn size={18} />
+          </button>
+          <span className="text-xs font-medium w-12 text-center">{Math.round(scale * 100)}%</span>
+          <button onClick={() => setScale(s => Math.max(s - 0.1, 0.2))} className="p-2 hover:bg-gray-100 rounded-full text-gray-600">
+            <ZoomOut size={18} />
+          </button>
+           <button onClick={() => { setScale(1); setPan({x:0, y:0}); }} className="ml-2 text-xs text-wechat font-medium hover:underline">
+            重置
+          </button>
+        </div>
+
+        {/* Canvas Container */}
+        <div className="flex-1 relative overflow-hidden cursor-crosshair touch-none" id="canvas-container">
+           {activeImage ? (
+             <CanvasEditor 
+                image={activeImage}
+                onUpdate={(updates) => updateActiveImage(updates)}
+                scale={scale}
+                pan={pan}
+                setPan={setPan}
+                isPanningMode={isPanningMode}
+                gridColor={gridColor}
+                tempFlasher={tempFlasher?.imageId === activeImage.id ? tempFlasher.cellIndex : null}
+                isLotteryRunning={isLotteryRunning}
+             />
+           ) : (
+             <div className="flex items-center justify-center h-full flex-col text-gray-400">
+               <ImageIcon size={64} className="mb-4 opacity-50" />
+               <p>请上传或选择一张图片开始</p>
+             </div>
+           )}
+        </div>
+      </div>
+
+      {/* Right/Bottom: Controls */}
+      <div className="w-full md:w-80 bg-white border-l border-gray-200 flex flex-col z-10 shadow-xl">
+        <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+          <h1 className="font-bold text-lg text-gray-800 flex items-center gap-2">
+            <Trophy className="text-wechat" size={20} />
+            抽奖助手
+          </h1>
+          <div className="text-xs bg-wechat-light text-wechat-dark px-2 py-1 rounded font-medium">
+             React v18
           </div>
-          <h1 className="text-lg font-medium tracking-wide">Moments Lottery</h1>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-           <label className={`${THEME.primary} hover:opacity-90 text-white px-4 py-2 rounded-md text-sm cursor-pointer transition flex items-center gap-2`}>
-             <Plus className="w-4 h-4" />
-             Add Images
-             <input type="file" accept="image/*" multiple onChange={handleFileUpload} className="hidden" />
-           </label>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="flex-1 flex flex-col md:flex-row h-screen pt-16 overflow-hidden">
-        
-        {/* Left: Canvas Area */}
-        <div 
-          className="relative flex-1 bg-[#1e1e1e] overflow-hidden flex items-center justify-center touch-none"
-          onWheel={handleWheel}
-        >
-          {images.length === 0 ? (
-            <div className="text-center p-12 border border-dashed border-gray-600 rounded-xl bg-[#2b2b2b]">
-              <ImageIcon className="w-16 h-16 text-gray-500 mx-auto mb-4" />
-              <h3 className="text-gray-300 text-lg font-medium mb-2">No Images Loaded</h3>
-              <p className="text-gray-500 mb-6 text-sm">Upload one or multiple screenshots to start</p>
-              <label className={`${THEME.primary} hover:opacity-90 text-white px-6 py-2.5 rounded-lg cursor-pointer transition inline-flex items-center gap-2`}>
-                <Upload className="w-4 h-4" />
-                Select Images
-                <input type="file" accept="image/*" multiple onChange={handleFileUpload} className="hidden" />
-              </label>
-            </div>
-          ) : (
-            <>
-              {/* Floating Toolbar */}
-              <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white/90 backdrop-blur shadow-lg rounded-full p-1.5 z-30 border border-gray-200">
-                 <button 
-                   onClick={() => setTool('select')}
-                   className={`p-2 rounded-full transition ${tool === 'select' ? `${THEME.primary} text-white` : 'text-gray-600 hover:bg-gray-100'}`}
-                   title="Select Mode"
-                 >
-                   <MousePointer2 className="w-5 h-5" />
-                 </button>
-                 <button 
-                   onClick={() => setTool('pan')}
-                   className={`p-2 rounded-full transition ${tool === 'pan' ? `${THEME.primary} text-white` : 'text-gray-600 hover:bg-gray-100'}`}
-                   title="Pan Mode"
-                 >
-                   <Move className="w-5 h-5" />
-                 </button>
-                 <div className="w-px h-6 bg-gray-300 mx-1"></div>
-                 <button onClick={() => zoomStep(-0.2)} className="p-2 text-gray-600 hover:bg-gray-100 rounded-full">
-                    <Minus className="w-4 h-4" />
-                 </button>
-                 <span className="text-xs font-mono min-w-[3rem] text-center">{Math.round(view.scale * 100)}%</span>
-                 <button onClick={() => zoomStep(0.2)} className="p-2 text-gray-600 hover:bg-gray-100 rounded-full">
-                    <Plus className="w-4 h-4" />
-                 </button>
-                 <button onClick={resetView} className="p-2 text-gray-600 hover:bg-gray-100 rounded-full" title="Reset View">
-                    <RefreshCcw className="w-4 h-4" />
-                 </button>
-              </div>
-
-              {/* Viewport Container */}
-              <div 
-                ref={containerRef} 
-                className={`w-full h-full overflow-hidden cursor-${tool === 'pan' ? 'grab' : 'default'}`}
-              >
-                <canvas
-                  ref={canvasRef}
-                  onPointerDown={handlePointerDown}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onPointerLeave={handlePointerUp}
-                  className="shadow-2xl origin-top-left transition-transform duration-75 ease-out select-none"
-                  style={{ 
-                    transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`
-                  }}
-                />
-              </div>
-            </>
-          )}
         </div>
 
-        {/* Right: Controls Panel */}
-        <aside className={`w-full md:w-80 ${THEME.bgPanel} border-l ${THEME.border} flex flex-col shadow-xl z-20`}>
-          <div className="flex-1 overflow-y-auto p-6 space-y-8">
+        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+          
+          {/* 1. Image Management */}
+          <section>
+             <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">图片列表</h2>
+             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                {images.map((img, idx) => (
+                  <div 
+                    key={img.id}
+                    onClick={() => setActiveImageId(img.id)}
+                    className={`relative flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${activeImageId === img.id ? 'border-wechat ring-2 ring-wechat/20' : 'border-transparent hover:border-gray-300'}`}
+                  >
+                    <img src={img.src} alt="" className="w-full h-full object-cover" />
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); removeImage(img.id); }}
+                      className="absolute top-0 right-0 bg-red-500 text-white p-0.5 rounded-bl hover:bg-red-600"
+                    >
+                      <X size={10} />
+                    </button>
+                    <div className="absolute bottom-0 left-0 bg-black/50 text-white text-[10px] px-1 w-full text-center">
+                      图 {idx + 1}
+                    </div>
+                  </div>
+                ))}
+                
+                <label className="flex-shrink-0 w-16 h-16 rounded-lg border-2 border-dashed border-gray-300 flex items-center justify-center cursor-pointer hover:border-wechat hover:bg-wechat-light transition-colors text-gray-400 hover:text-wechat">
+                  <input type="file" multiple accept="image/*" onChange={handleImageUpload} className="hidden" />
+                  <Plus size={24} />
+                </label>
+             </div>
+          </section>
+
+          {/* 2. Grid Settings (Only if image active) */}
+          <section className={`transition-opacity ${!activeImage ? 'opacity-50 pointer-events-none' : ''}`}>
+            <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+              <Grid3X3 size={14} /> 网格设置
+            </h2>
             
-            {/* 1. Grid Config */}
-            <section className="space-y-4">
-              <div className={`flex items-center gap-2 ${THEME.textPrimary} font-medium text-sm border-b border-gray-100 pb-2`}>
-                <Grid3X3 className="w-4 h-4" />
-                <h2>GRID CONFIG</h2>
-              </div>
-              
+            <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-medium text-gray-500 uppercase">Rows</label>
+                  <label className="block text-xs text-gray-500 mb-1">行数 (Rows)</label>
                   <input 
                     type="number" 
-                    min="1" 
-                    value={gridRows}
-                    onChange={(e) => {
-                       setGridRows(Number(e.target.value));
-                       setExcludedCells(new Set());
-                       setWinners([]);
-                    }}
-                    className="w-full mt-1 bg-gray-50 border border-gray-200 rounded p-2 text-sm focus:border-[#07C160] outline-none transition"
+                    min={1} 
+                    max={50}
+                    value={activeImage?.gridRows || 1}
+                    onChange={(e) => updateActiveImage({ gridRows: Math.max(1, parseInt(e.target.value) || 1), excludedCells: [], winners: [] })}
+                    className="w-full border border-gray-300 rounded px-2 py-1.5 focus:border-wechat focus:ring-1 focus:ring-wechat outline-none"
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-500 uppercase">Cols</label>
+                  <label className="block text-xs text-gray-500 mb-1">列数 (Cols)</label>
                   <input 
                     type="number" 
-                    min="1" 
-                    value={gridCols}
-                    onChange={(e) => {
-                       setGridCols(Number(e.target.value));
-                       setExcludedCells(new Set());
-                       setWinners([]);
-                    }}
-                    className="w-full mt-1 bg-gray-50 border border-gray-200 rounded p-2 text-sm focus:border-[#07C160] outline-none transition"
+                    min={1} 
+                    max={50}
+                    value={activeImage?.gridCols || 1}
+                    onChange={(e) => updateActiveImage({ gridCols: Math.max(1, parseInt(e.target.value) || 1), excludedCells: [], winners: [] })}
+                    className="w-full border border-gray-300 rounded px-2 py-1.5 focus:border-wechat focus:ring-1 focus:ring-wechat outline-none"
                   />
                 </div>
               </div>
 
-              <div className="space-y-1">
-                 <label className="text-xs font-medium text-gray-500 uppercase flex items-center gap-2">
-                   <Palette className="w-3 h-3" /> Grid Color
-                 </label>
-                 <div className="flex items-center gap-2 mt-1">
-                    <input 
-                      type="color" 
-                      value={gridColor} 
-                      onChange={(e) => setGridColor(e.target.value)}
-                      className="w-8 h-8 rounded border-none cursor-pointer"
-                    />
-                    <span className="text-xs text-gray-400 uppercase">{gridColor}</span>
+               <div>
+                 <label className="block text-xs text-gray-500 mb-1">网格颜色</label>
+                 <div className="flex gap-2">
+                   {['rgba(255, 255, 255, 0.6)', 'rgba(0, 0, 0, 0.6)', 'rgba(7, 193, 96, 0.6)', 'rgba(255, 0, 0, 0.6)'].map(color => (
+                     <button
+                        key={color}
+                        onClick={() => setGridColor(color)}
+                        className={`w-6 h-6 rounded-full border border-gray-300 ${gridColor === color ? 'ring-2 ring-offset-1 ring-gray-400' : ''}`}
+                        style={{ backgroundColor: color }}
+                     />
+                   ))}
                  </div>
-              </div>
-
-              <div className="bg-gray-50 rounded p-3 flex justify-between items-center text-sm border border-gray-100">
-                <span className="text-gray-500">Total Valid Items</span>
-                <span className="font-bold text-gray-800">{validCellsCount}</span>
-              </div>
-            </section>
-
-            {/* 2. Lottery Config */}
-            <section className="space-y-4">
-              <div className={`flex items-center gap-2 ${THEME.textPrimary} font-medium text-sm border-b border-gray-100 pb-2`}>
-                <Settings className="w-4 h-4" />
-                <h2>LOTTERY</h2>
-              </div>
-
-              <div>
-                <label className="flex justify-between text-sm font-medium text-gray-700 mb-2">
-                  <span>Winners Count</span>
-                  <span className={`${THEME.textPrimary} font-bold`}>{winnerCount}</span>
-                </label>
-                <input 
-                  type="range"
-                  min="1"
-                  max={Math.max(1, validCellsCount)}
-                  value={winnerCount}
-                  onChange={(e) => setWinnerCount(Number(e.target.value))}
-                  className="w-full accent-[#07C160] h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-
-              <div>
-                <label className="flex justify-between text-sm font-medium text-gray-700 mb-2">
-                   <div className="flex items-center gap-1">
-                     <Clock className="w-3 h-3" />
-                     <span>Duration</span>
-                   </div>
-                  <span className="text-gray-400">{animationDuration}s</span>
-                </label>
-                <input 
-                  type="range"
-                  min="1"
-                  max="10"
-                  step="0.5"
-                  value={animationDuration}
-                  onChange={(e) => setAnimationDuration(Number(e.target.value))}
-                  className="w-full accent-[#07C160] h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-            </section>
-
-            {/* 3. Action */}
-            <div className="pt-2">
-              <button
-                onClick={startLottery}
-                disabled={!selection || validCellsCount === 0 || isAnimating}
-                className={`
-                  w-full py-3.5 rounded-lg font-medium text-base shadow-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98]
-                  ${!selection || validCellsCount === 0 
-                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed' 
-                    : isAnimating
-                      ? 'bg-[#FBBF24] text-white cursor-wait'
-                      : `${THEME.primary} ${THEME.primaryHover} text-white`
-                  }
-                `}
-              >
-                {isAnimating ? 'Running...' : 'Start Lottery'}
-              </button>
+               </div>
             </div>
-            
-            {/* 4. Results */}
-            {winners.length > 0 && (
-              <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-                <div className={`flex items-center gap-2 ${THEME.textPrimary} font-medium text-sm border-b border-gray-100 pb-2 mb-3`}>
-                  <CheckCircle className="w-4 h-4" />
-                  <h2>RESULTS</h2>
-                </div>
-                <div className="grid grid-cols-5 gap-2">
-                  {winners.map((idx, i) => (
-                    <div key={idx} className="bg-green-50 border border-green-100 text-[#07C160] rounded p-1.5 text-center relative overflow-hidden group">
-                      <span className="text-[10px] absolute top-0 left-1 opacity-60">#{i + 1}</span>
-                      <span className="text-base font-bold block mt-2">{idx + 1}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+          </section>
 
-            {excludedCells.size > 0 && (
-              <button 
-                onClick={() => setExcludedCells(new Set())}
-                className="w-full py-2 text-xs text-red-500 hover:bg-red-50 rounded border border-transparent hover:border-red-100 transition flex items-center justify-center gap-1"
-              >
-                <Trash2 className="w-3 h-3" /> Clear Exclusions ({excludedCells.size})
-              </button>
-            )}
+          {/* 3. Lottery Settings */}
+          <section className="pt-4 border-t border-gray-100">
+             <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+              <Settings2 size={14} /> 抽奖设置
+            </h2>
 
-          </div>
-          
-          <div className="p-4 border-t border-gray-100 text-center text-[10px] text-gray-300 uppercase tracking-wider">
-             V8 WeChat Edition
-          </div>
-        </aside>
-      </main>
+            <div className="space-y-4">
+               <div>
+                  <label className="block text-xs text-gray-500 mb-1">中奖人数</label>
+                  <div className="flex items-center gap-2">
+                    <input 
+                      type="range" 
+                      min={1} 
+                      max={Math.max(1, totalEligibleCount)} 
+                      value={winnerCount}
+                      onChange={(e) => setWinnerCount(parseInt(e.target.value))}
+                      className="flex-1 accent-wechat"
+                    />
+                    <input 
+                      type="number"
+                      min={1}
+                      max={totalEligibleCount}
+                      value={winnerCount}
+                      onChange={(e) => setWinnerCount(Math.max(1, parseInt(e.target.value)))}
+                      className="w-16 border border-gray-300 rounded px-2 py-1 text-center"
+                    />
+                  </div>
+               </div>
+
+               <div>
+                  <label className="block text-xs text-gray-500 mb-1 flex justify-between">
+                    <span>动画时长 (秒)</span>
+                    <span>{animationDuration}s</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                     <Clock size={16} className="text-gray-400" />
+                     <input 
+                      type="range" 
+                      min={1} 
+                      max={10} 
+                      step={0.5}
+                      value={animationDuration}
+                      onChange={(e) => setAnimationDuration(parseFloat(e.target.value))}
+                      className="flex-1 accent-wechat"
+                    />
+                  </div>
+               </div>
+
+               <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+                 <div className="flex justify-between items-center mb-1">
+                   <span className="text-sm text-gray-600">有效参与数:</span>
+                   <span className="font-bold text-wechat text-lg">{totalEligibleCount}</span>
+                 </div>
+                 <p className="text-[10px] text-gray-400">
+                   总格子数: {images.reduce((acc, img) => acc + (img.selection ? img.gridRows * img.gridCols : 0), 0)} | 
+                   已排除: {images.reduce((acc, img) => acc + img.excludedCells.length, 0)}
+                 </p>
+               </div>
+            </div>
+          </section>
+        </div>
+
+        {/* Footer Actions */}
+        <div className="p-4 border-t border-gray-200 bg-gray-50">
+           <button 
+            onClick={startLottery}
+            disabled={isLotteryRunning || totalEligibleCount === 0}
+            className={`w-full py-3 rounded-lg flex items-center justify-center gap-2 font-bold text-white transition-all transform active:scale-95 shadow-md
+              ${isLotteryRunning || totalEligibleCount === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-wechat hover:bg-wechat-dark shadow-wechat/30'}`}
+           >
+             {isLotteryRunning ? (
+               '抽奖中...'
+             ) : (
+               <>
+                 <Play size={20} fill="currentColor" /> 开始抽奖
+               </>
+             )}
+           </button>
+
+           {globalWinners.length > 0 && !isLotteryRunning && (
+             <div className="mt-4 animate-fade-in-up">
+               <h3 className="font-bold text-gray-700 mb-2 flex items-center gap-2">
+                 <CheckCircle2 size={16} className="text-wechat" /> 中奖名单
+               </h3>
+               <div className="flex flex-wrap gap-2">
+                 {globalWinners.map((w, i) => (
+                   <div key={i} className="bg-white border border-wechat text-wechat px-3 py-1 rounded shadow-sm text-sm font-medium">
+                     图{w.imageIndex} - #{w.cellIndex + 1}
+                   </div>
+                 ))}
+               </div>
+             </div>
+           )}
+        </div>
+      </div>
     </div>
   );
+};
+
+// --- Canvas Component ---
+
+interface CanvasEditorProps {
+  image: LotteryImage;
+  onUpdate: (updates: Partial<LotteryImage>) => void;
+  scale: number;
+  pan: { x: number, y: number };
+  setPan: React.Dispatch<React.SetStateAction<{ x: number, y: number }>>;
+  isPanningMode: boolean;
+  gridColor: string;
+  tempFlasher: number | null;
+  isLotteryRunning: boolean;
 }
+
+const CanvasEditor: React.FC<CanvasEditorProps> = ({ 
+  image, 
+  onUpdate, 
+  scale, 
+  pan, 
+  setPan, 
+  isPanningMode,
+  gridColor,
+  tempFlasher,
+  isLotteryRunning 
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  
+  // Interaction State
+  const [mode, setMode] = useState<InteractionMode>('none');
+  const [activeHandle, setActiveHandle] = useState<ResizeHandle>(null);
+  const [startPos, setStartPos] = useState<{ x: number, y: number }>({ x: 0, y: 0 });
+  const [initialSelection, setInitialSelection] = useState<Selection | null>(null);
+  const [initialPan, setInitialPan] = useState<{ x: number, y: number } | null>(null);
+
+  // Helper: Map screen coordinates to image coordinates
+  const getMousePos = (e: React.PointerEvent) => {
+    if (!canvasRef.current) return { x: 0, y: 0 };
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / scale;
+    const y = (e.clientY - rect.top) / scale;
+    return { x, y };
+  };
+
+  // Helper: Check if point is inside rect
+  const isPointInRect = (x: number, y: number, rect: Selection) => {
+    return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+  };
+
+  // Helper: Get resize handle at position
+  const getHandleAtPos = (x: number, y: number, rect: Selection): ResizeHandle => {
+    const r = HANDLE_SIZE / scale; // Scale handle hit area inverse to zoom for UX
+    const hw = rect.w;
+    const hh = rect.h;
+    
+    // Check corners
+    if (Math.abs(x - rect.x) < r && Math.abs(y - rect.y) < r) return 'tl';
+    if (Math.abs(x - (rect.x + hw)) < r && Math.abs(y - rect.y) < r) return 'tr';
+    if (Math.abs(x - (rect.x + hw)) < r && Math.abs(y - (rect.y + hh)) < r) return 'br';
+    if (Math.abs(x - rect.x) < r && Math.abs(y - (rect.y + hh)) < r) return 'bl';
+
+    // Check edges
+    if (Math.abs(x - (rect.x + hw/2)) < r && Math.abs(y - rect.y) < r) return 'tm';
+    if (Math.abs(x - (rect.x + hw)) < r && Math.abs(y - (rect.y + hh/2)) < r) return 'mr';
+    if (Math.abs(x - (rect.x + hw/2)) < r && Math.abs(y - (rect.y + hh)) < r) return 'bm';
+    if (Math.abs(x - rect.x) < r && Math.abs(y - (rect.y + hh/2)) < r) return 'ml';
+
+    return null;
+  };
+
+  // --- Drawing Logic ---
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Load image for drawing
+    const imgObj = new Image();
+    imgObj.src = image.src;
+    
+    // We don't need to wait for onload here because parent already did, 
+    // but safe to check if it's ready. 
+    // Since we are using blob URLs, it should be fast.
+    
+    const render = () => {
+      // Clear
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 1. Draw Image
+      ctx.drawImage(imgObj, 0, 0);
+
+      // 2. Draw Overlay (Dark mask outside selection)
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      if (image.selection) {
+        // Draw 4 rectangles around the selection
+        const { x, y, w, h } = image.selection;
+        const W = canvas.width;
+        const H = canvas.height;
+
+        ctx.beginPath();
+        // Outer rect (CW)
+        ctx.moveTo(0,0);
+        ctx.lineTo(W,0);
+        ctx.lineTo(W,H);
+        ctx.lineTo(0,H);
+        ctx.lineTo(0,0);
+        // Inner rect (CCW) -> Creates hole
+        ctx.moveTo(x, y);
+        ctx.lineTo(x, y+h);
+        ctx.lineTo(x+w, y+h);
+        ctx.lineTo(x+w, y);
+        ctx.lineTo(x, y);
+        ctx.fill();
+
+        // 3. Draw Grid
+        const cellW = w / image.gridCols;
+        const cellH = h / image.gridRows;
+        
+        ctx.beginPath();
+        ctx.strokeStyle = gridColor;
+        ctx.lineWidth = 1;
+
+        // Vertical lines
+        for(let i=1; i<image.gridCols; i++) {
+          ctx.moveTo(x + i*cellW, y);
+          ctx.lineTo(x + i*cellW, y + h);
+        }
+        // Horizontal lines
+        for(let i=1; i<image.gridRows; i++) {
+          ctx.moveTo(x, y + i*cellH);
+          ctx.lineTo(x + w, y + i*cellH);
+        }
+        ctx.stroke();
+
+        // 4. Draw Excluded Cells
+        image.excludedCells.forEach(idx => {
+          const r = Math.floor(idx / image.gridCols);
+          const c = idx % image.gridCols;
+          const cx = x + c * cellW;
+          const cy = y + r * cellH;
+
+          // Gray fill
+          ctx.fillStyle = 'rgba(100, 100, 100, 0.7)';
+          ctx.fillRect(cx, cy, cellW, cellH);
+          
+          // Red X
+          ctx.beginPath();
+          ctx.strokeStyle = 'white';
+          ctx.lineWidth = 2;
+          ctx.moveTo(cx + cellW*0.2, cy + cellH*0.2);
+          ctx.lineTo(cx + cellW*0.8, cy + cellH*0.8);
+          ctx.moveTo(cx + cellW*0.8, cy + cellH*0.2);
+          ctx.lineTo(cx + cellW*0.2, cy + cellH*0.8);
+          ctx.stroke();
+        });
+
+        // 5. Draw Temp Flasher (Animation)
+        if (tempFlasher !== null) {
+          const r = Math.floor(tempFlasher / image.gridCols);
+          const c = tempFlasher % image.gridCols;
+          const cx = x + c * cellW;
+          const cy = y + r * cellH;
+
+          ctx.strokeStyle = '#ff0000';
+          ctx.lineWidth = 4;
+          ctx.strokeRect(cx, cy, cellW, cellH);
+          ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+          ctx.fillRect(cx, cy, cellW, cellH);
+        }
+
+        // 6. Draw Winners (Final)
+        image.winners.forEach(idx => {
+           const r = Math.floor(idx / image.gridCols);
+           const c = idx % image.gridCols;
+           const cx = x + c * cellW;
+           const cy = y + r * cellH;
+
+           // Thick Red Border
+           ctx.strokeStyle = '#ff0000';
+           ctx.lineWidth = 5;
+           ctx.strokeRect(cx + 2, cy + 2, cellW - 4, cellH - 4);
+           
+           // Index label
+           ctx.fillStyle = '#ff0000';
+           ctx.font = 'bold 16px Arial';
+           ctx.fillText(`#${idx+1}`, cx + 5, cy + 20);
+        });
+
+        // 7. Selection Border & Handles (Only if not running lottery)
+        if (!isLotteryRunning) {
+          ctx.strokeStyle = '#07C160'; // WeChat Green
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x, y, w, h);
+
+          // Handles
+          ctx.fillStyle = 'white';
+          ctx.strokeStyle = '#07C160';
+          ctx.lineWidth = 1;
+          const handleSize = 8 / scale; // Compensate zoom
+
+          const drawHandle = (hx: number, hy: number) => {
+            ctx.beginPath();
+            ctx.rect(hx - handleSize/2, hy - handleSize/2, handleSize, handleSize);
+            ctx.fill();
+            ctx.stroke();
+          };
+
+          drawHandle(x, y); // TL
+          drawHandle(x + w/2, y); // TM
+          drawHandle(x + w, y); // TR
+          drawHandle(x + w, y + h/2); // MR
+          drawHandle(x + w, y + h); // BR
+          drawHandle(x + w/2, y + h); // BM
+          drawHandle(x, y + h); // BL
+          drawHandle(x, y + h/2); // ML
+        }
+
+      } else {
+        // No selection
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    };
+
+    // Use requestAnimationFrame for smoother updates especially during animation or drag
+    let animId = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(animId);
+
+  }, [image, scale, gridColor, tempFlasher, isLotteryRunning]);
+
+
+  // --- Event Listeners ---
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+    // 1. Pan Mode
+    if (isPanningMode || e.button === 1 || e.shiftKey) { // Middle click or shift or mode
+      setMode('panning');
+      setStartPos({ x: e.clientX, y: e.clientY });
+      setInitialPan({ ...pan });
+      return;
+    }
+
+    if (isLotteryRunning) return;
+
+    const { x, y } = getMousePos(e);
+    setStartPos({ x: e.clientX, y: e.clientY }); // Screen pos for drag threshold
+
+    if (image.selection) {
+      // Check handles
+      const handle = getHandleAtPos(x, y, image.selection);
+      if (handle) {
+        setMode('resizing');
+        setActiveHandle(handle);
+        setInitialSelection({ ...image.selection });
+        return;
+      }
+
+      // Check inside
+      if (isPointInRect(x, y, image.selection)) {
+        setMode('moving');
+        setInitialSelection({ ...image.selection });
+        return;
+      }
+    }
+
+    // Start new selection
+    setMode('drawing');
+    onUpdate({ 
+      selection: { x, y, w: 0, h: 0 },
+      excludedCells: [],
+      winners: []
+    });
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    e.preventDefault();
+
+    if (mode === 'panning' && initialPan) {
+      const dx = e.clientX - startPos.x;
+      const dy = e.clientY - startPos.y;
+      setPan({ x: initialPan.x + dx, y: initialPan.y + dy });
+      return;
+    }
+
+    const { x, y } = getMousePos(e);
+    
+    // Cursor handling when hovering
+    if (mode === 'none' && !isLotteryRunning && image.selection) {
+       const handle = getHandleAtPos(x, y, image.selection);
+       if (handle) {
+         const cursorMap: Record<string, string> = {
+           tl: 'nw-resize', tr: 'ne-resize', bl: 'sw-resize', br: 'se-resize',
+           tm: 'n-resize', bm: 's-resize', ml: 'w-resize', mr: 'e-resize'
+         };
+         if (canvasRef.current) canvasRef.current.style.cursor = cursorMap[handle];
+       } else if (isPointInRect(x, y, image.selection)) {
+         if (canvasRef.current) canvasRef.current.style.cursor = 'move';
+       } else {
+         if (canvasRef.current) canvasRef.current.style.cursor = 'crosshair';
+       }
+    }
+
+    if (mode === 'drawing' && image.selection) {
+      const w = x - image.selection.x;
+      const h = y - image.selection.y;
+      onUpdate({ selection: { ...image.selection, w, h } });
+    } else if (mode === 'moving' && initialSelection) {
+      // Calculate delta in canvas space
+      // Note: We need startPos in canvas space for this. 
+      // Simplification: We calculate offset from initial mouse down
+      const dx = (e.clientX - startPos.x) / scale;
+      const dy = (e.clientY - startPos.y) / scale;
+      
+      let newX = initialSelection.x + dx;
+      let newY = initialSelection.y + dy;
+
+      // Boundaries
+      newX = Math.max(0, Math.min(newX, image.naturalWidth - initialSelection.w));
+      newY = Math.max(0, Math.min(newY, image.naturalHeight - initialSelection.h));
+
+      // Dragging resets exclusions? The prompt says "Move/Resize must clear excludedCells"
+      // But we only do it if actual drag occurred (handled in PointerUp logic normally, 
+      // but for real-time visual, we can keep exclusion until end or clear now).
+      // Prompt: "At the start of dragging, immediately clear excludedCells"
+      if (image.excludedCells.length > 0) {
+        onUpdate({ excludedCells: [], winners: [] });
+      }
+
+      onUpdate({ selection: { ...initialSelection, x: newX, y: newY } });
+
+    } else if (mode === 'resizing' && initialSelection && activeHandle) {
+       if (image.excludedCells.length > 0) {
+          onUpdate({ excludedCells: [], winners: [] });
+       }
+
+       const s = initialSelection;
+       // Delta
+       const dx = (e.clientX - startPos.x) / scale;
+       const dy = (e.clientY - startPos.y) / scale;
+
+       let newX = s.x, newY = s.y, newW = s.w, newH = s.h;
+
+       if (activeHandle.includes('l')) { newX += dx; newW -= dx; }
+       if (activeHandle.includes('r')) { newW += dx; }
+       if (activeHandle.includes('t')) { newY += dy; newH -= dy; }
+       if (activeHandle.includes('b')) { newH += dy; }
+
+       // Flip check
+       if (newW < 0) { newX += newW; newW = Math.abs(newW); }
+       if (newH < 0) { newY += newH; newH = Math.abs(newH); }
+
+       onUpdate({ selection: { x: newX, y: newY, w: newW, h: newH } });
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+
+    // Normalize selection (ensure w/h are positive)
+    if (image.selection) {
+      const { x, y, w, h } = image.selection;
+      const normSel = {
+        x: w < 0 ? x + w : x,
+        y: h < 0 ? y + h : y,
+        w: Math.abs(w),
+        h: Math.abs(h)
+      };
+
+      // If selection is too small, remove it (accidental click outside)
+      if (mode === 'drawing' && (normSel.w < 10 || normSel.h < 10)) {
+        onUpdate({ selection: null });
+      } else if (mode !== 'none' && mode !== 'panning') {
+        onUpdate({ selection: normSel });
+      }
+    }
+
+    // Click to Toggle Exclusion (Only in 'moving' mode pending check)
+    if (mode === 'moving') {
+       const dist = Math.hypot(e.clientX - startPos.x, e.clientY - startPos.y);
+       if (dist < DRAG_THRESHOLD) {
+         // It was a click!
+         handleCellClick(e);
+       }
+    }
+
+    setMode('none');
+    setActiveHandle(null);
+    setInitialSelection(null);
+    setInitialPan(null);
+  };
+
+  const handleCellClick = (e: React.PointerEvent) => {
+    if (!image.selection) return;
+    const { x, y } = getMousePos(e);
+    
+    // Relative pos
+    const rx = x - image.selection.x;
+    const ry = y - image.selection.y;
+    
+    // Cell dims
+    const cellW = image.selection.w / image.gridCols;
+    const cellH = image.selection.h / image.gridRows;
+
+    const col = Math.floor(rx / cellW);
+    const row = Math.floor(ry / cellH);
+
+    if (col >= 0 && col < image.gridCols && row >= 0 && row < image.gridRows) {
+       const idx = row * image.gridCols + col;
+       const isExcluded = image.excludedCells.includes(idx);
+       
+       const newExcluded = isExcluded 
+         ? image.excludedCells.filter(i => i !== idx)
+         : [...image.excludedCells, idx];
+       
+       // Don't clear winners/exclusion list when clicking to toggle
+       onUpdate({ excludedCells: newExcluded });
+    }
+  };
+
+  // Keyboard Panning (Spacebar)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => { if(e.code === 'Space') setMode(prev => prev === 'none' ? 'panning' : prev); };
+    const handleKeyUp = (e: KeyboardEvent) => { if(e.code === 'Space') setMode(prev => prev === 'panning' ? 'none' : prev); };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    }
+  }, []);
+
+
+  // Center image on load
+  useEffect(() => {
+    if (containerRef.current && image.naturalWidth > 0) {
+      const cw = containerRef.current.clientWidth;
+      const ch = containerRef.current.clientHeight;
+      const iw = image.naturalWidth;
+      const ih = image.naturalHeight;
+      
+      // Fit to screen initially
+      const fitScale = Math.min(cw / iw, ch / ih) * 0.9;
+      // Only set if this is the first load/switch and user hasn't messed with pan too much? 
+      // Simplified: Just center offset
+      const cx = (cw - iw * fitScale) / 2;
+      const cy = (ch - ih * fitScale) / 2;
+      
+      // We are lifting state up, but for UX, let's just use defaults or passed props
+      // NOTE: This effect runs on image change. We might want to reset pan/scale.
+      // But parent controls state. We can trigger an update if pan is 0,0
+      if (pan.x === 0 && pan.y === 0 && scale === 1) {
+         // This is a bit hacky to modify parent state from effect, but standard for "Fit to screen"
+         // onUpdate is for image data, not view. 
+         // View state is passed in.
+      }
+    }
+  }, [image.id]);
+
+  return (
+    <div 
+      ref={containerRef} 
+      className={`w-full h-full relative overflow-hidden bg-gray-200 select-none ${isPanningMode ? 'cursor-grab active:cursor-grabbing' : ''}`}
+    >
+      <div 
+        style={{
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
+          transformOrigin: '0 0',
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+        }}
+        className="relative shadow-2xl transition-transform duration-75 ease-out"
+      >
+        <canvas
+          ref={canvasRef}
+          width={image.naturalWidth}
+          height={image.naturalHeight}
+          className="block"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={handlePointerUp}
+        />
+      </div>
+    </div>
+  );
+};
+
+export default App;

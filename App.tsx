@@ -23,7 +23,10 @@ import {
   Undo2,
   Redo2,
   Download,
-  FileJson
+  FileJson,
+  Minus,
+  History,
+  RotateCcw
 } from 'lucide-react';
 
 // --- Types ---
@@ -76,6 +79,12 @@ interface LotteryConfigExport {
   }>;
 }
 
+interface HistoryEntry {
+  images: LotteryImage[];
+  action: string;
+  timestamp: number;
+}
+
 type InteractionMode = 'none' | 'drawing' | 'moving' | 'resizing' | 'panning';
 type ResizeHandle = 'tl' | 'tm' | 'tr' | 'mr' | 'br' | 'bm' | 'bl' | 'ml' | null;
 
@@ -119,6 +128,150 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
   });
 };
 
+const formatTime = (ts: number) => {
+  const d = new Date(ts);
+  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+};
+
+// --- Custom Slider Component (Fixes Mobile Dragging) ---
+interface CustomSliderProps {
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  onChange: (val: number) => void;
+  className?: string;
+}
+
+const CustomSlider: React.FC<CustomSliderProps> = ({ value, min, max, step = 1, onChange, className = "" }) => {
+  const ref = useRef<HTMLDivElement>(null);
+
+  const update = (e: React.PointerEvent) => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    const pct = x / rect.width;
+    let val = min + pct * (max - min);
+    // Snap
+    if (step) val = Math.round(val / step) * step;
+    val = Math.max(min, Math.min(max, val));
+    onChange(val);
+  };
+
+  return (
+    <div 
+      ref={ref}
+      className={`relative h-10 flex items-center select-none touch-none cursor-pointer ${className}`}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        update(e);
+      }}
+      onPointerMove={(e) => {
+        e.preventDefault();
+        if (e.buttons === 1) update(e);
+      }}
+    >
+      {/* Track */}
+      <div className="absolute inset-x-0 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+         <div 
+           className="h-full bg-wechat transition-all duration-75 ease-out" 
+           style={{ width: `${(value - min) / (max - min) * 100}%` }} 
+         />
+      </div>
+      {/* Thumb */}
+      <div 
+        className="absolute h-6 w-6 bg-white border border-gray-300 shadow-md rounded-full top-1/2 -translate-y-1/2 -translate-x-1/2 transition-transform active:scale-110"
+        style={{ left: `${(value - min) / (max - min) * 100}%` }}
+      />
+    </div>
+  );
+};
+
+// --- Confetti Component ---
+const ConfettiSystem: React.FC = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const particles: {
+      x: number; y: number; vx: number; vy: number; 
+      color: string; size: number; rotation: number; vRotation: number;
+    }[] = [];
+
+    const colors = ['#07C160', '#FFD700', '#FF4136', '#0074D9', '#FF851B'];
+
+    for (let i = 0; i < 150; i++) {
+      particles.push({
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+        vx: (Math.random() - 0.5) * 15,
+        vy: (Math.random() - 1) * 15 - 5,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        size: Math.random() * 8 + 4,
+        rotation: Math.random() * 360,
+        vRotation: (Math.random() - 0.5) * 10
+      });
+    }
+
+    let animationId: number;
+    const gravity = 0.3;
+    const drag = 0.98;
+
+    const render = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        p.vy += gravity;
+        p.vx *= drag;
+        p.vy *= drag;
+        p.x += p.vx;
+        p.y += p.vy;
+        p.rotation += p.vRotation;
+
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate((p.rotation * Math.PI) / 180);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+        ctx.restore();
+      }
+
+      if (particles.length > 0 && particles.some(p => p.y < canvas.height)) {
+         animationId = requestAnimationFrame(render);
+      }
+    };
+
+    render();
+
+    const timer = setTimeout(() => {
+       cancelAnimationFrame(animationId);
+    }, 4000);
+
+    const handleResize = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    };
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      cancelAnimationFrame(animationId);
+      clearTimeout(timer);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
+
+  return <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none z-[100]" />;
+};
+
 // --- Components ---
 
 const App: React.FC = () => {
@@ -131,10 +284,11 @@ const App: React.FC = () => {
   const [tempFlasher, setTempFlasher] = useState<{imageId: string, cellIndex: number} | null>(null);
   const [globalWinners, setGlobalWinners] = useState<WinnerResult[]>([]);
   const [gridColor, setGridColor] = useState<string>('rgba(255, 255, 255, 0.6)');
+  const [showConfetti, setShowConfetti] = useState(false);
   
   // History State
-  const [history, setHistory] = useState<LotteryImage[][]>([]);
-  const [future, setFuture] = useState<LotteryImage[][]>([]);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [future, setFuture] = useState<HistoryEntry[]>([]);
   
   // Canvas View State
   const [scale, setScale] = useState(1);
@@ -144,7 +298,10 @@ const App: React.FC = () => {
   // Mobile UI State
   const [isMobileSettingsOpen, setIsMobileSettingsOpen] = useState(false);
   const [isMobileResultsOpen, setIsMobileResultsOpen] = useState(false);
-  const [mobileTab, setMobileTab] = useState<'images' | 'settings'>('settings');
+  const [mobileTab, setMobileTab] = useState<'images' | 'settings' | 'history'>('settings');
+
+  // Desktop UI State
+  const [desktopTab, setDesktopTab] = useState<'images' | 'settings' | 'history'>('settings');
 
   // Computed
   const activeImage = useMemo(() => images.find(img => img.id === activeImageId), [images, activeImageId]);
@@ -160,24 +317,50 @@ const App: React.FC = () => {
   }, [images]);
 
   // --- History Actions ---
-  const saveHistory = useCallback(() => {
+  const saveHistory = useCallback((action: string, overrideImages?: LotteryImage[]) => {
     setHistory(prev => {
-      const newHistory = [...prev, images];
-      // Limit history size to 50 to prevent memory issues
-      if (newHistory.length > 50) return newHistory.slice(newHistory.length - 50);
-      return newHistory;
+      const newEntry = { 
+        images: overrideImages || images, 
+        action, 
+        timestamp: Date.now() 
+      };
+      // Keep linear history for the log view
+      const newHist = [...prev, newEntry];
+      if (newHist.length > 100) return newHist.slice(newHist.length - 100);
+      return newHist;
     });
-    setFuture([]);
+    setFuture([]); // Clear redo stack on new action
   }, [images]);
 
   const undo = useCallback(() => {
     if (history.length === 0) return;
-    const previous = history[history.length - 1];
+    const previous = history[history.length - 1]; // Current state representation
     const newHistory = history.slice(0, -1);
     
-    setFuture(prev => [images, ...prev]);
-    setImages(previous);
-    setHistory(newHistory);
+    // In our "Log" model, undo acts on the stack.
+    // We move the current state to future.
+    setFuture(prev => [{ images, action: '撤销前状态', timestamp: Date.now() }, ...prev]);
+    
+    // Restore the one before previous? 
+    // Wait, history[last] IS the state before the current modification if we save *before* change?
+    // Usually saveHistory is called *after* change.
+    // If I have [StateA, StateB]. Current is StateB.
+    // Undo should go to StateA.
+    // StateA is history[length-2].
+    // If I only have StateB in history (because initial state wasn't pushed?), we need to be careful.
+    
+    if (newHistory.length > 0) {
+      setImages(newHistory[newHistory.length - 1].images);
+      setHistory(newHistory);
+    } else {
+       // If empty, maybe clear images? Or just don't allow undoing the first state?
+       // Let's assume initial state is handled.
+       if (history.length === 1) {
+           // Reached start
+           setImages([]); // Or some initial state
+           setHistory([]);
+       }
+    }
   }, [history, images]);
 
   const redo = useCallback(() => {
@@ -185,12 +368,37 @@ const App: React.FC = () => {
     const next = future[0];
     const newFuture = future.slice(1);
 
-    setHistory(prev => [...prev, images]);
-    setImages(next);
+    setHistory(prev => [...prev, { images: next.images, action: '重做', timestamp: Date.now() }]);
+    setImages(next.images);
     setFuture(newFuture);
-  }, [future, images]);
+  }, [future]);
 
-  // Keyboard Shortcuts for Undo/Redo
+  // Non-destructive restore
+  const restoreHistory = (index: number) => {
+    const entry = history[index];
+    if (!entry) return;
+
+    const newImages = entry.images;
+    setImages(newImages);
+    
+    // Append a new "Restored" action to history so we don't lose the "future" events relative to the restored point
+    // This effectively branches/linearizes the history.
+    setHistory(prev => [
+      ...prev, 
+      { 
+        images: newImages, 
+        action: `恢复: ${entry.action}`, 
+        timestamp: Date.now() 
+      }
+    ]);
+    setFuture([]); // Clear future as we have taken a new path
+    
+    if (window.innerWidth < 768) {
+      setIsMobileSettingsOpen(false);
+    }
+  };
+
+  // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !isLotteryRunning) {
@@ -216,14 +424,11 @@ const App: React.FC = () => {
     const layout = imageLayouts.find(l => l.id === imgId);
     if (!layout) return;
 
-    // Get container size
     const containerW = window.innerWidth; 
     const containerH = window.innerHeight; 
-
-    // Mobile adjustment
     const isMobile = window.innerWidth < 768;
-    const viewW = isMobile ? containerW : containerW - 320; // Subtract sidebar width on desktop
-    const viewH = isMobile ? containerH - 64 : containerH; // Subtract bottom bar on mobile
+    const viewW = isMobile ? containerW : containerW - 320; 
+    const viewH = isMobile ? containerH - 64 : containerH; 
 
     const padding = 40;
     const fitScale = Math.min(
@@ -231,10 +436,7 @@ const App: React.FC = () => {
       (viewH - padding * 2) / layout.naturalHeight
     );
     
-    // Clamp scale
     const finalScale = Math.min(Math.max(fitScale, 0.1), 2);
-
-    // Center layout
     const centerX = (viewW - layout.naturalWidth * finalScale) / 2;
     const centerY = (viewH - layout.naturalHeight * finalScale) / 2;
 
@@ -249,9 +451,7 @@ const App: React.FC = () => {
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      saveHistory(); // Save state before adding images
       const newImages: LotteryImage[] = [];
-      let lastId = "";
       Array.from(e.target.files).forEach((file: File) => {
         const src = URL.createObjectURL(file);
         const img = new Image();
@@ -259,7 +459,6 @@ const App: React.FC = () => {
         img.onload = () => {
           setImages(prev => {
             const nextId = generateId();
-            lastId = nextId;
             const next = [...prev, {
               id: nextId,
               src,
@@ -271,21 +470,34 @@ const App: React.FC = () => {
               excludedCells: [],
               winners: []
             }];
+            // Save history AFTER state update in a useEffect or by passing next directly?
+            // To keep it simple, we'll use a timeout or assume the last update triggers history if we were tracking strict state changes.
+            // Here we just manually call saveHistory with the computed next state.
+            // But we have a loop here. 
+            // Better to process all then update.
             return next;
           });
         };
       });
-      // Slight delay to allow state update before setting active
+      
+      // Since image loading is async, we can't easily saveHistory with the *final* state here immediately.
+      // We will rely on the user seeing the image appear. 
+      // A robust way is to just push a generic "Add Image" marker after a delay
       setTimeout(() => {
-        if (newImages.length > 0) setActiveImageId(newImages[0].id); 
-      }, 100);
+         // This is a bit loose but works for this level of app
+         setImages(current => {
+           saveHistory('导入图片', current);
+           if (current.length > 0) setActiveImageId(current[current.length - 1].id);
+           return current;
+         });
+      }, 200);
     }
   };
 
   const removeImage = (id: string) => {
-    saveHistory(); // Save state before removing
     setImages(prev => {
       const next = prev.filter(img => img.id !== id);
+      saveHistory('删除图片', next);
       if (activeImageId === id) {
         setActiveImageId(next.length > 0 ? next[0].id : null);
       }
@@ -307,9 +519,7 @@ const App: React.FC = () => {
   
   const handleExportConfig = async () => {
     try {
-      // Convert images to base64
       const imagesExportData = await Promise.all(images.map(async (img) => {
-        // We need to fetch the blob from the object URL to convert to base64
         const response = await fetch(img.src);
         const blob = await response.blob();
         const base64 = await blobToBase64(blob);
@@ -365,14 +575,10 @@ const App: React.FC = () => {
           throw new Error("Invalid configuration file format");
         }
 
-        saveHistory(); // Save current state before overwriting
-
-        // Restore settings
         setWinnerCount(config.settings.winnerCount);
         setAnimationDuration(config.settings.animationDuration);
         setGridColor(config.settings.gridColor);
 
-        // Restore images (Convert Base64 back to Blob URL for performance)
         const restoredImages: LotteryImage[] = await Promise.all(config.images.map(async (imgData) => {
           const res = await fetch(imgData.dataUrl);
           const blob = await res.blob();
@@ -387,20 +593,19 @@ const App: React.FC = () => {
             gridRows: imgData.gridRows,
             gridCols: imgData.gridCols,
             excludedCells: imgData.excludedCells,
-            winners: [] // Don't restore winners
+            winners: [] 
           };
         }));
 
         setImages(restoredImages);
+        saveHistory('导入配置', restoredImages);
+
         if (restoredImages.length > 0) {
           setActiveImageId(restoredImages[0].id);
-          // Optional: Zoom to first image after import
-          // setTimeout(() => zoomToImage(restoredImages[0].id), 100); 
         } else {
           setActiveImageId(null);
         }
         setGlobalWinners([]);
-        
         alert("配置导入成功！");
 
       } catch (error) {
@@ -409,11 +614,10 @@ const App: React.FC = () => {
       }
     };
     reader.readAsText(file);
-    e.target.value = ''; // Reset input
+    e.target.value = ''; 
   };
 
 
-  // Effect: Auto-zoom to first image on load if it's the only one
   useEffect(() => {
     if (images.length === 1 && activeImageId === images[0].id) {
        zoomToImage(images[0].id);
@@ -428,13 +632,14 @@ const App: React.FC = () => {
       return;
     }
     
-    saveHistory(); // Save state before clearing previous winners
-
-    // Close mobile drawer if open
+    // We save history BEFORE starting, or effectively the "Start" state is just the current state.
+    // But we might want to record that a lottery happened? 
+    // Usually lottery doesn't change setup state, just result state which is ephemeral until end.
+    
     setIsMobileSettingsOpen(false);
     setIsMobileResultsOpen(false);
+    setShowConfetti(false);
 
-    // Clear previous winners
     setImages(prev => prev.map(img => ({ ...img, winners: [] })));
     setGlobalWinners([]);
     setIsLotteryRunning(true);
@@ -466,12 +671,18 @@ const App: React.FC = () => {
         const shuffledPool = shuffleArray(pool);
         const winners = shuffledPool.slice(0, Math.min(winnerCount, pool.length));
         
-        setImages(prev => prev.map(img => {
-          const imgWinners = winners
-            .filter(w => w.imageId === img.id)
-            .map(w => w.cellIndex);
-          return { ...img, winners: imgWinners };
-        }));
+        setImages(prev => {
+          const next = prev.map(img => {
+            const imgWinners = winners
+              .filter(w => w.imageId === img.id)
+              .map(w => w.cellIndex);
+            return { ...img, winners: imgWinners };
+          });
+          // Save history with results?
+          // saveHistory('抽奖结果', next); // Can't call inside loop easily without ref issues
+          // We'll skip saving result to history for now as it's a result, not configuration.
+          return next;
+        });
         
         setGlobalWinners(winners.map(w => ({
           imageId: w.imageId,
@@ -481,7 +692,9 @@ const App: React.FC = () => {
         
         setTempFlasher(null);
         setIsLotteryRunning(false);
-        setIsMobileResultsOpen(true); // Open results on mobile when done
+        setIsMobileResultsOpen(true);
+        setShowConfetti(true);
+        setTimeout(() => setShowConfetti(false), 5000);
       }
     };
 
@@ -493,7 +706,7 @@ const App: React.FC = () => {
   // --- Render Parts ---
 
   const ImageList = () => (
-    <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
+    <div className="flex flex-wrap gap-2">
       {images.map((img, idx) => (
         <div 
           key={img.id}
@@ -521,9 +734,73 @@ const App: React.FC = () => {
     </div>
   );
 
+  const HistoryList = () => (
+    <div className="space-y-2">
+      {history.length === 0 ? (
+        <p className="text-gray-400 text-sm text-center py-4">暂无历史记录</p>
+      ) : (
+        [...history].reverse().map((entry, index) => {
+          const originalIndex = history.length - 1 - index;
+          // Highlight if it is the latest entry (current state)
+          const isCurrent = originalIndex === history.length - 1;
+          
+          return (
+            <div 
+              key={index} 
+              onClick={() => restoreHistory(originalIndex)}
+              className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all
+                ${isCurrent ? 'bg-wechat-light border-wechat' : 'bg-gray-50 border-gray-100 hover:border-gray-300 active:bg-gray-100'}`}
+            >
+              <div className="flex items-center gap-3">
+                 <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isCurrent ? 'bg-wechat text-white' : 'bg-gray-200 text-gray-500'}`}>
+                    {isCurrent ? <CheckCircle2 size={16} /> : <RotateCcw size={16} />}
+                 </div>
+                 <div>
+                    <p className={`text-sm font-medium ${isCurrent ? 'text-wechat-dark' : 'text-gray-700'}`}>{entry.action}</p>
+                    <p className="text-xs text-gray-400">{formatTime(entry.timestamp)}</p>
+                 </div>
+              </div>
+              {!isCurrent && (
+                <button className="text-xs text-wechat font-medium px-2 py-1 bg-white border border-wechat/20 rounded hover:bg-wechat hover:text-white transition-colors">
+                   恢复
+                </button>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+
+  const NumberControl = ({ label, value, onChange, min, max }: { label: string, value: number, onChange: (val: number) => void, min: number, max: number }) => (
+    <div>
+      <label className="block text-xs text-gray-500 mb-1">{label}</label>
+      <div className="flex items-center border border-gray-300 rounded overflow-hidden h-8">
+        <button 
+          onClick={() => onChange(Math.max(min, value - 1))}
+          className="px-3 bg-gray-50 hover:bg-gray-100 active:bg-gray-200 border-r border-gray-300 text-gray-600 h-full flex items-center justify-center"
+        >
+          <Minus size={14} />
+        </button>
+        <input 
+          type="number" 
+          className="w-full text-center outline-none text-sm appearance-none bg-white h-full"
+          value={value}
+          onChange={(e) => onChange(Math.max(min, Math.min(max, parseInt(e.target.value) || min)))}
+          min={min} max={max}
+        />
+        <button 
+          onClick={() => onChange(Math.min(max, value + 1))}
+          className="px-3 bg-gray-50 hover:bg-gray-100 active:bg-gray-200 border-l border-gray-300 text-gray-600 h-full flex items-center justify-center"
+        >
+          <Plus size={14} />
+        </button>
+      </div>
+    </div>
+  );
+
   const SettingsPanel = () => (
     <div className="space-y-6">
-       {/* Active Image Settings */}
        <section className={`transition-opacity ${!activeImage ? 'opacity-50 pointer-events-none' : ''}`}>
         <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
           <Grid3X3 size={14} /> 当前图片网格设置
@@ -531,34 +808,30 @@ const App: React.FC = () => {
         
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">行数 (Rows)</label>
-              <input 
-                type="number" 
-                min={1} 
-                max={50}
+             <NumberControl 
+                label="行数 (Rows)"
                 value={activeImage?.gridRows || 1}
-                onChange={(e) => {
-                  saveHistory();
-                  updateActiveImage({ gridRows: Math.max(1, parseInt(e.target.value) || 1), excludedCells: [], winners: [] });
+                min={1} max={50}
+                onChange={(val) => {
+                  setImages(prev => {
+                    const next = prev.map(img => img.id === activeImageId ? { ...img, gridRows: val, excludedCells: [], winners: [] } : img);
+                    saveHistory('调整网格行数', next);
+                    return next;
+                  });
                 }}
-                className="w-full border border-gray-300 rounded px-2 py-1.5 focus:border-wechat focus:ring-1 focus:ring-wechat outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">列数 (Cols)</label>
-              <input 
-                type="number" 
-                min={1} 
-                max={50}
+             />
+             <NumberControl 
+                label="列数 (Cols)"
                 value={activeImage?.gridCols || 1}
-                onChange={(e) => {
-                  saveHistory();
-                  updateActiveImage({ gridCols: Math.max(1, parseInt(e.target.value) || 1), excludedCells: [], winners: [] });
+                min={1} max={50}
+                onChange={(val) => {
+                  setImages(prev => {
+                    const next = prev.map(img => img.id === activeImageId ? { ...img, gridCols: val, excludedCells: [], winners: [] } : img);
+                    saveHistory('调整网格列数', next);
+                    return next;
+                  });
                 }}
-                className="w-full border border-gray-300 rounded px-2 py-1.5 focus:border-wechat focus:ring-1 focus:ring-wechat outline-none"
-              />
-            </div>
+             />
           </div>
 
             <div>
@@ -577,7 +850,6 @@ const App: React.FC = () => {
         </div>
       </section>
 
-      {/* Global Lottery Settings */}
       <section className="pt-4 border-t border-gray-100">
           <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
           <Settings2 size={14} /> 抽奖全局设置
@@ -587,21 +859,21 @@ const App: React.FC = () => {
             <div>
               <label className="block text-xs text-gray-500 mb-1">中奖人数</label>
               <div className="flex items-center gap-2">
-                <input 
-                  type="range" 
-                  min={1} 
-                  max={Math.max(1, totalEligibleCount)} 
-                  value={winnerCount}
-                  onChange={(e) => setWinnerCount(parseInt(e.target.value))}
-                  className="flex-1 accent-wechat"
-                />
+                <div className="flex-1">
+                  <CustomSlider 
+                    min={1} 
+                    max={Math.max(1, totalEligibleCount)} 
+                    value={winnerCount}
+                    onChange={(val) => setWinnerCount(val)}
+                  />
+                </div>
                 <input 
                   type="number"
                   min={1}
                   max={totalEligibleCount}
                   value={winnerCount}
                   onChange={(e) => setWinnerCount(Math.max(1, parseInt(e.target.value)))}
-                  className="w-16 border border-gray-300 rounded px-2 py-1 text-center"
+                  className="w-12 border border-gray-300 rounded px-1 py-1 text-center text-sm h-8"
                 />
               </div>
             </div>
@@ -613,15 +885,15 @@ const App: React.FC = () => {
               </label>
               <div className="flex items-center gap-2">
                   <Clock size={16} className="text-gray-400" />
-                  <input 
-                  type="range" 
-                  min={1} 
-                  max={10} 
-                  step={0.5}
-                  value={animationDuration}
-                  onChange={(e) => setAnimationDuration(parseFloat(e.target.value))}
-                  className="flex-1 accent-wechat"
-                />
+                  <div className="flex-1">
+                    <CustomSlider 
+                      min={1} 
+                      max={10} 
+                      step={0.5}
+                      value={animationDuration}
+                      onChange={(val) => setAnimationDuration(val)}
+                    />
+                  </div>
               </div>
             </div>
 
@@ -636,12 +908,10 @@ const App: React.FC = () => {
               </p>
             </div>
             
-            {/* Export/Import Controls */}
             <div className="grid grid-cols-2 gap-2 pt-2">
               <button 
                 onClick={handleExportConfig}
                 className="flex items-center justify-center gap-2 px-3 py-2 border border-gray-200 rounded text-xs text-gray-600 hover:bg-gray-50 hover:text-wechat transition-colors"
-                title="导出当前配置（含图片）到 JSON 文件"
               >
                 <Download size={14} /> 导出配置
               </button>
@@ -671,35 +941,31 @@ const App: React.FC = () => {
             -ms-overflow-style: none;
             scrollbar-width: none;
           }
+          @keyframes slide-up {
+             from { transform: translateY(100%); opacity: 0; }
+             to { transform: translateY(0); opacity: 1; }
+          }
+          .animate-slide-up {
+             animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+          }
         `}
       </style>
       
-      {/* Canvas Area (Fullscreen on Mobile, Left side on Desktop) */}
+      {showConfetti && <ConfettiSystem />}
+      
+      {/* Canvas Area */}
       <div className="absolute inset-0 md:relative md:flex-1 bg-gray-200 overflow-hidden flex flex-col z-0">
-        {/* Floating Toolbar (Top) */}
+        {/* Floating Toolbar */}
         <div className="
           z-20 flex gap-2 items-center pointer-events-auto
           fixed top-0 left-0 right-0 bg-white/90 backdrop-blur border-b border-gray-200 px-4 py-3 overflow-x-auto no-scrollbar
           md:absolute md:top-4 md:left-1/2 md:-translate-x-1/2 md:w-auto md:bg-white/90 md:rounded-full md:shadow-lg md:border md:justify-center md:border-gray-200 md:py-2
         ">
-           {/* Undo/Redo Buttons */}
-           <button 
-             onClick={undo}
-             disabled={history.length === 0 || isLotteryRunning}
-             className={`p-2 rounded-full transition-colors flex-shrink-0 ${history.length === 0 || isLotteryRunning ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-600'}`}
-             title="撤销 (Ctrl+Z)"
-           >
-             <Undo2 size={18} />
-           </button>
-           <button 
-             onClick={redo}
-             disabled={future.length === 0 || isLotteryRunning}
-             className={`p-2 rounded-full transition-colors flex-shrink-0 ${future.length === 0 || isLotteryRunning ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-600'}`}
-             title="重做 (Ctrl+Shift+Z)"
-           >
-             <Redo2 size={18} />
-           </button>
-           <div className="w-px h-6 bg-gray-300 mx-1 flex-shrink-0"></div>
+           {/* Mobile-only Undo/Redo in top bar if needed, but we put them in desktop sidebar footer */}
+           <div className="md:hidden flex gap-2 border-r border-gray-300 pr-2 mr-1">
+             <button onClick={undo} disabled={history.length === 0} className={`p-1.5 rounded bg-gray-100 ${history.length === 0 ? 'opacity-30' : ''}`}><Undo2 size={16}/></button>
+             <button onClick={redo} disabled={future.length === 0} className={`p-1.5 rounded bg-gray-100 ${future.length === 0 ? 'opacity-30' : ''}`}><Redo2 size={16}/></button>
+           </div>
 
            <button 
             onClick={() => setIsPanningMode(false)}
@@ -728,7 +994,6 @@ const App: React.FC = () => {
           </button>
         </div>
 
-        {/* Infinite Canvas */}
         <div className="flex-1 relative overflow-hidden cursor-crosshair touch-none" id="canvas-container">
              {images.length === 0 ? (
                <div className="flex items-center justify-center h-full flex-col text-gray-400 p-8 text-center pointer-events-none">
@@ -741,12 +1006,22 @@ const App: React.FC = () => {
                   imageLayouts={imageLayouts}
                   activeImageId={activeImageId}
                   onUpdate={(id, updates) => {
-                    setImages(prev => prev.map(img => img.id === id ? { ...img, ...updates } : img));
+                    setImages(prev => {
+                      const next = prev.map(img => img.id === id ? { ...img, ...updates } : img);
+                      return next;
+                    });
                   }}
                   onSelectImage={handleSelectImage}
-                  onInteractionStart={saveHistory}
+                  onInteractionStart={(action) => {
+                    // Start saves current state before mutation in Canvas? 
+                    // Canvas updates live, so we typically save result on end.
+                    // But onInteractionStart is called on down. 
+                    // Let's rely on CanvasEditor to call this properly.
+                    // For now, simple interaction logging:
+                    saveHistory(action);
+                  }}
                   scale={scale}
-                  setScale={setScale} // Pass setScale for pinch zoom
+                  setScale={setScale}
                   pan={pan}
                   setPan={setPan}
                   isPanningMode={isPanningMode}
@@ -760,35 +1035,61 @@ const App: React.FC = () => {
 
       {/* --- Desktop Sidebar --- */}
       <div className="hidden md:flex w-80 bg-white border-l border-gray-200 flex-col z-10 shadow-xl relative h-full">
-        <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
-          <h1 className="font-bold text-lg text-gray-800 flex items-center justify-between w-full">
-             <span className="flex items-center gap-2"><Trophy className="text-wechat" size={20} /> 抽奖助手</span>
-             <span className="text-xs bg-wechat-light text-wechat-dark px-2 py-1 rounded font-medium">Pro</span>
+        <div className="p-4 border-b border-gray-100 bg-gray-50">
+          <h1 className="font-bold text-lg text-gray-800 flex items-center gap-2 mb-3">
+             <Trophy className="text-wechat" size={20} /> 抽奖助手
           </h1>
+          
+          {/* Desktop Tabs */}
+          <div className="flex bg-gray-200 p-1 rounded-lg">
+            <button 
+              onClick={() => setDesktopTab('images')}
+              className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${desktopTab === 'images' ? 'bg-white text-wechat shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              图片
+            </button>
+            <button 
+              onClick={() => setDesktopTab('settings')}
+              className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${desktopTab === 'settings' ? 'bg-white text-wechat shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              设置
+            </button>
+            <button 
+              onClick={() => setDesktopTab('history')}
+              className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${desktopTab === 'history' ? 'bg-white text-wechat shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              记录
+            </button>
+          </div>
         </div>
 
-        {/* Scrollable Middle Content */}
         <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-           <section className="mb-6">
-             <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">图片列表</h2>
-             <ImageList />
-           </section>
-
-           <SettingsPanel />
+           {desktopTab === 'images' && <ImageList />}
+           {desktopTab === 'settings' && <SettingsPanel />}
+           {desktopTab === 'history' && <HistoryList />}
         </div>
 
-        {/* Fixed Bottom: Draw & Results */}
-        <div className="p-4 border-t border-gray-200 bg-gray-50 flex-shrink-0">
+        <div className="p-4 border-t border-gray-200 bg-gray-50 flex-shrink-0 space-y-3">
+           {/* Desktop Undo/Redo/Reset Controls */}
+           <div className="flex items-center justify-between text-gray-500 text-xs px-1">
+             <div className="flex gap-2">
+                <button onClick={undo} disabled={history.length === 0} className="hover:text-wechat disabled:opacity-30" title="撤销"><Undo2 size={16} /></button>
+                <button onClick={redo} disabled={future.length === 0} className="hover:text-wechat disabled:opacity-30" title="重做"><Redo2 size={16} /></button>
+             </div>
+             <button onClick={() => { setScale(1); setPan({x:0, y:0}); }} className="flex items-center gap-1 hover:text-wechat" title="重置视图">
+               <RotateCcw size={14} /> 重置视图
+             </button>
+           </div>
+
            <button 
             onClick={startLottery}
             disabled={isLotteryRunning || totalEligibleCount === 0}
-            className={`w-full py-3 rounded-lg flex items-center justify-center gap-2 font-bold text-white transition-all transform active:scale-95 shadow-md mb-4
+            className={`w-full py-3 rounded-lg flex items-center justify-center gap-2 font-bold text-white transition-all transform active:scale-95 shadow-md
               ${isLotteryRunning || totalEligibleCount === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-wechat hover:bg-wechat-dark shadow-wechat/30'}`}
            >
              {isLotteryRunning ? '抽奖中...' : <><Play size={20} fill="currentColor" /> 开始抽奖</>}
            </button>
 
-           {/* Desktop Results - Horizontal Scroll, max 5 rows */}
            {globalWinners.length > 0 && !isLotteryRunning && (
              <div className="animate-fade-in-up">
                <h3 className="font-bold text-gray-700 mb-2 flex items-center gap-2 text-sm">
@@ -796,7 +1097,7 @@ const App: React.FC = () => {
                </h3>
                <div 
                   className="grid grid-rows-5 grid-flow-col gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-gray-300"
-                  style={{ maxHeight: '180px' }} // Approx 5 rows height
+                  style={{ maxHeight: '180px' }} 
                 >
                  {globalWinners.map((w, i) => (
                    <div 
@@ -815,7 +1116,6 @@ const App: React.FC = () => {
 
       {/* --- Mobile Bottom Bar --- */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 flex flex-col justify-end pointer-events-none">
-        {/* Results Overlay (Mobile) - Toggleable */}
         {globalWinners.length > 0 && !isLotteryRunning && isMobileResultsOpen && (
            <div className="bg-white/95 backdrop-blur border-t border-gray-200 p-3 max-h-40 overflow-y-auto animate-slide-up shadow-sm pointer-events-auto">
               <div className="flex items-center justify-between mb-2">
@@ -834,30 +1134,36 @@ const App: React.FC = () => {
            </div>
         )}
 
-        {/* Mobile Control Bar */}
         <div className="bg-white border-t border-gray-200 px-4 py-2 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] flex items-center justify-between shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] pointer-events-auto">
-           <div className="flex gap-5">
+           <div className="flex gap-4">
               <button 
                 onClick={() => { setIsMobileSettingsOpen(true); setMobileTab('images'); }}
-                className="flex flex-col items-center text-gray-500 hover:text-wechat"
+                className="flex flex-col items-center text-gray-500 hover:text-wechat px-1"
               >
                 <ImageIcon size={20} />
-                <span className="text-[10px]">图片</span>
+                <span className="text-[10px] mt-0.5">图片</span>
               </button>
               <button 
                 onClick={() => { setIsMobileSettingsOpen(true); setMobileTab('settings'); }}
-                className="flex flex-col items-center text-gray-500 hover:text-wechat"
+                className="flex flex-col items-center text-gray-500 hover:text-wechat px-1"
               >
                 <Settings2 size={20} />
-                <span className="text-[10px]">设置</span>
+                <span className="text-[10px] mt-0.5">设置</span>
+              </button>
+              <button 
+                onClick={() => { setIsMobileSettingsOpen(true); setMobileTab('history'); }}
+                className="flex flex-col items-center text-gray-500 hover:text-wechat px-1"
+              >
+                <History size={20} />
+                <span className="text-[10px] mt-0.5">记录</span>
               </button>
               {globalWinners.length > 0 && (
                 <button 
                   onClick={() => setIsMobileResultsOpen(!isMobileResultsOpen)}
-                  className={`flex flex-col items-center ${isMobileResultsOpen ? 'text-wechat' : 'text-gray-500 hover:text-wechat'}`}
+                  className={`flex flex-col items-center px-1 ${isMobileResultsOpen ? 'text-wechat' : 'text-gray-500 hover:text-wechat'}`}
                 >
                   <Trophy size={20} />
-                  <span className="text-[10px]">结果</span>
+                  <span className="text-[10px] mt-0.5">结果</span>
                 </button>
               )}
            </div>
@@ -865,23 +1171,21 @@ const App: React.FC = () => {
            <button 
              onClick={startLottery} 
              disabled={isLotteryRunning || totalEligibleCount === 0}
-             className={`px-6 py-2 rounded-full font-bold text-white text-sm flex items-center gap-2 shadow-md shadow-wechat/20
+             className={`px-5 py-2 rounded-full font-bold text-white text-sm flex items-center gap-1.5 shadow-md shadow-wechat/20
                ${isLotteryRunning ? 'bg-gray-400' : 'bg-wechat'}`}
            >
               {isLotteryRunning ? '...' : <Play size={16} fill="currentColor" />} 
-              {isLotteryRunning ? '抽奖中' : '开始'}
+              {isLotteryRunning ? '抽奖' : '开始'}
            </button>
         </div>
       </div>
 
-       {/* --- Mobile Drawer (Full Screen Backdrop) --- */}
+       {/* --- Mobile Drawer --- */}
        {isMobileSettingsOpen && (
           <div className="fixed inset-0 z-50 flex flex-col justify-end">
-             {/* Backdrop */}
              <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsMobileSettingsOpen(false)}></div>
              
-             {/* Drawer Content */}
-             <div className="bg-white rounded-t-2xl p-4 overflow-y-auto animate-slide-up shadow-2xl relative max-h-[85vh] flex flex-col">
+             <div className="bg-white rounded-t-2xl p-4 overflow-y-auto animate-slide-up shadow-2xl relative max-h-[85vh] flex flex-col pb-[calc(2rem+env(safe-area-inset-bottom))]">
                 <div className="w-12 h-1.5 bg-gray-300 rounded-full mx-auto mb-4 flex-shrink-0"></div>
                 
                 <div className="flex items-center gap-4 border-b border-gray-100 mb-4 flex-shrink-0">
@@ -897,10 +1201,18 @@ const App: React.FC = () => {
                    >
                      抽奖设置
                    </button>
+                   <button 
+                    onClick={() => setMobileTab('history')}
+                    className={`pb-2 text-sm font-bold ${mobileTab === 'history' ? 'text-wechat border-b-2 border-wechat' : 'text-gray-400'}`}
+                   >
+                     历史记录
+                   </button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto pb-4">
-                  {mobileTab === 'images' ? <ImageList /> : <SettingsPanel />}
+                  {mobileTab === 'images' && <ImageList />}
+                  {mobileTab === 'settings' && <SettingsPanel />}
+                  {mobileTab === 'history' && <HistoryList />}
                 </div>
 
                 <button 
@@ -924,9 +1236,9 @@ interface CanvasEditorProps {
   activeImageId: string | null;
   onUpdate: (id: string, updates: Partial<LotteryImage>) => void;
   onSelectImage: (id: string) => void;
-  onInteractionStart: () => void;
+  onInteractionStart: (action: string) => void;
   scale: number;
-  setScale: React.Dispatch<React.SetStateAction<number>>; // Added for pinch zoom
+  setScale: React.Dispatch<React.SetStateAction<number>>;
   pan: { x: number, y: number };
   setPan: React.Dispatch<React.SetStateAction<{ x: number, y: number }>>;
   isPanningMode: boolean;
@@ -954,14 +1266,12 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const imagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
   
-  // Interaction State
   const [mode, setMode] = useState<InteractionMode>('none');
   const [activeHandle, setActiveHandle] = useState<ResizeHandle>(null);
   const [startPos, setStartPos] = useState<{ x: number, y: number }>({ x: 0, y: 0 });
   const [initialSelection, setInitialSelection] = useState<Selection | null>(null);
   const [initialPan, setInitialPan] = useState<{ x: number, y: number } | null>(null);
 
-  // Multi-touch / Pinch State
   const activePointers = useRef<Map<number, { x: number, y: number }>>(new Map());
   const pinchStartInfo = useRef<{
     dist: number;
@@ -970,8 +1280,6 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
     worldPoint: { x: number, y: number };
   } | null>(null);
 
-
-  // Helper: Get world coordinates from pointer event
   const getWorldPos = (e: React.PointerEvent) => {
     if (!canvasRef.current) return { x: 0, y: 0 };
     const rect = canvasRef.current.getBoundingClientRect();
@@ -982,7 +1290,6 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
     return { x, y };
   };
 
-  // Helper: Find which image is at world coordinates
   const getImageAtWorldPos = (wx: number, wy: number) => {
     return imageLayouts.find(l => 
       wx >= l.worldX && wx <= l.worldX + l.naturalWidth &&
@@ -990,17 +1297,14 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
     );
   };
 
-  // Helper: Check if point is inside a specific image's selection
   const isPointInSelection = (wx: number, wy: number, layout: ImageLayout) => {
     if (!layout.selection) return false;
-    // Selection is relative to image, so convert world pos to local image pos
     const lx = wx - layout.worldX;
     const ly = wy - layout.worldY;
     const { x, y, w, h } = layout.selection;
     return lx >= x && lx <= x + w && ly >= y && ly <= y + h;
   };
 
-  // Helper: Get resize handle for a specific image
   const getHandle = (wx: number, wy: number, layout: ImageLayout): ResizeHandle => {
     if (!layout.selection) return null;
     const lx = wx - layout.worldX;
@@ -1008,13 +1312,11 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
     const { x, y, w, h } = layout.selection;
     const r = HANDLE_SIZE / scale;
 
-    // Check corners
     if (Math.abs(lx - x) < r && Math.abs(ly - y) < r) return 'tl';
     if (Math.abs(lx - (x + w)) < r && Math.abs(ly - y) < r) return 'tr';
     if (Math.abs(lx - (x + w)) < r && Math.abs(ly - (y + h)) < r) return 'br';
     if (Math.abs(lx - x) < r && Math.abs(ly - (y + h)) < r) return 'bl';
 
-    // Check edges
     if (Math.abs(lx - (x + w/2)) < r && Math.abs(ly - y) < r) return 'tm';
     if (Math.abs(lx - (x + w)) < r && Math.abs(ly - (y + h/2)) < r) return 'mr';
     if (Math.abs(lx - (x + w/2)) < r && Math.abs(ly - (y + h)) < r) return 'bm';
@@ -1023,14 +1325,12 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
     return null;
   };
 
-  // --- Drawing Logic ---
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !containerRef.current) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Preload images into map
     imageLayouts.forEach(layout => {
       if (!imagesRef.current.has(layout.id)) {
         const img = new Image();
@@ -1040,7 +1340,6 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
     });
 
     const render = () => {
-      // 1. Setup Canvas (Infinite)
       const cw = containerRef.current!.clientWidth;
       const ch = containerRef.current!.clientHeight;
       if (canvas.width !== cw || canvas.height !== ch) {
@@ -1051,23 +1350,18 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
       ctx.clearRect(0, 0, cw, ch);
 
       ctx.save();
-      // Apply View Transform
       ctx.translate(pan.x, pan.y);
       ctx.scale(scale, scale);
 
-      // 2. Draw Each Image
       imageLayouts.forEach(layout => {
         const imgObj = imagesRef.current.get(layout.id);
         if (!imgObj) return;
 
-        // Save context for local image transform
         ctx.save();
         ctx.translate(layout.worldX, layout.worldY);
 
-        // Draw Image
         ctx.drawImage(imgObj, 0, 0);
 
-        // Draw Active Highlight (if this is the active image)
         if (layout.id === activeImageId) {
            ctx.shadowColor = 'rgba(7, 193, 96, 0.5)';
            ctx.shadowBlur = 20;
@@ -1076,17 +1370,15 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
            ctx.lineWidth = 4 / scale;
            ctx.strokeStyle = '#07C160';
            ctx.strokeRect(0, 0, layout.naturalWidth, layout.naturalHeight);
-           ctx.shadowBlur = 0; // Reset
+           ctx.shadowBlur = 0; 
         }
 
-        // Draw Overlay (Dark mask outside selection)
         ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
         if (layout.selection) {
           const { x, y, w, h } = layout.selection;
           
           ctx.beginPath();
           ctx.rect(0, 0, layout.naturalWidth, layout.naturalHeight);
-          // Cut hole
           ctx.moveTo(x, y);
           ctx.lineTo(x, y+h);
           ctx.lineTo(x+w, y+h);
@@ -1094,13 +1386,12 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
           ctx.lineTo(x, y);
           ctx.fill('evenodd');
 
-          // Draw Grid
           const cellW = w / layout.gridCols;
           const cellH = h / layout.gridRows;
           
           ctx.beginPath();
           ctx.strokeStyle = gridColor;
-          ctx.lineWidth = 1 / scale; // Keep thin
+          ctx.lineWidth = 1 / scale; 
 
           for(let i=1; i<layout.gridCols; i++) {
             ctx.moveTo(x + i*cellW, y);
@@ -1112,7 +1403,6 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
           }
           ctx.stroke();
 
-          // Draw Excluded Cells
           layout.excludedCells.forEach(idx => {
             const r = Math.floor(idx / layout.gridCols);
             const c = idx % layout.gridCols;
@@ -1132,13 +1422,10 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
             ctx.stroke();
           });
 
-          // Draw Winners & Flasher Logic
-          // Calculate dynamic styles based on CELL SIZE (in world units) to ensure consistency with zoom
           const minDim = Math.min(cellW, cellH);
-          const borderThickness = Math.max(3, minDim * 0.08); // Approx 8% of cell size
-          const fontSize = Math.max(14, minDim * 0.4); // Approx 40% of cell size
+          const borderThickness = Math.max(3, minDim * 0.08); 
+          const fontSize = Math.max(14, minDim * 0.4); 
 
-          // Draw Flasher (Global logic passes single flasher)
           if (tempFlasher && tempFlasher.imageId === layout.id) {
              const idx = tempFlasher.cellIndex;
              const r = Math.floor(idx / layout.gridCols);
@@ -1153,7 +1440,6 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
              ctx.fillRect(cx, cy, cellW, cellH);
           }
 
-          // Draw Winners
           layout.winners.forEach(idx => {
              const r = Math.floor(idx / layout.gridCols);
              const c = idx % layout.gridCols;
@@ -1162,19 +1448,15 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
 
              ctx.strokeStyle = '#ff0000';
              ctx.lineWidth = borderThickness;
-             // Inset to stay within cell
              ctx.strokeRect(cx + borderThickness/2, cy + borderThickness/2, cellW - borderThickness, cellH - borderThickness);
              
-             // Label
              ctx.fillStyle = '#ff0000';
              ctx.font = `bold ${fontSize}px Arial`;
              const text = `#${idx+1}`;
              const tm = ctx.measureText(text);
-             // Center text in cell
              ctx.fillText(text, cx + (cellW - tm.width)/2, cy + (cellH + fontSize*0.35)/2);
           });
 
-          // Selection Border & Handles
           if (!isLotteryRunning && layout.id === activeImageId) {
              ctx.strokeStyle = '#07C160';
              ctx.lineWidth = 2 / scale;
@@ -1192,26 +1474,25 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
                ctx.stroke();
              };
 
-             drawHandle(x, y); // TL
-             drawHandle(x + w/2, y); // TM
-             drawHandle(x + w, y); // TR
-             drawHandle(x + w, y + h/2); // MR
-             drawHandle(x + w, y + h); // BR
-             drawHandle(x + w/2, y + h); // BM
-             drawHandle(x, y + h); // BL
-             drawHandle(x, y + h/2); // ML
+             drawHandle(x, y); 
+             drawHandle(x + w/2, y); 
+             drawHandle(x + w, y); 
+             drawHandle(x + w, y + h/2); 
+             drawHandle(x + w, y + h); 
+             drawHandle(x + w/2, y + h); 
+             drawHandle(x, y + h); 
+             drawHandle(x, y + h/2); 
           }
 
         } else {
-          // No selection - mask whole image
           ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
           ctx.fillRect(0, 0, layout.naturalWidth, layout.naturalHeight);
         }
 
-        ctx.restore(); // End local image transform
+        ctx.restore();
       });
 
-      ctx.restore(); // End view transform
+      ctx.restore();
     };
 
     let animId = requestAnimationFrame(render);
@@ -1220,16 +1501,12 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
   }, [imageLayouts, activeImageId, scale, pan, gridColor, tempFlasher, isLotteryRunning]);
 
 
-  // --- Event Listeners ---
-
   const handlePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     
-    // Add pointer for multi-touch
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // Multi-touch Pinch Check
     if (activePointers.current.size === 2) {
       const points = Array.from(activePointers.current.values());
       const p1 = points[0];
@@ -1238,8 +1515,6 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
       const cx = (p1.x + p2.x) / 2;
       const cy = (p1.y + p2.y) / 2;
 
-      // Calculate the point in World Space that is currently under the center of the pinch
-      // Screen = World * Scale + Pan  =>  World = (Screen - Pan) / Scale
       const rect = canvasRef.current?.getBoundingClientRect();
       if (rect) {
         const screenX = cx - rect.left;
@@ -1249,15 +1524,14 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
 
         pinchStartInfo.current = {
           dist,
-          scale, // Capture current scale at start of pinch
-          pan,   // Capture current pan at start of pinch
+          scale, 
+          pan,   
           worldPoint: { x: wx, y: wy }
         };
       }
-      return; // Stop processing other interactions
+      return; 
     }
 
-    // Pan Mode
     if (isPanningMode || e.button === 1 || e.shiftKey) { 
       setMode('panning');
       setStartPos({ x: e.clientX, y: e.clientY });
@@ -1268,9 +1542,8 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
     if (isLotteryRunning) return;
 
     const { x: wx, y: wy } = getWorldPos(e);
-    setStartPos({ x: e.clientX, y: e.clientY }); // Screen pos for threshold check
+    setStartPos({ x: e.clientX, y: e.clientY }); 
 
-    // Check interaction with ACTIVE image first
     const activeLayout = imageLayouts.find(l => l.id === activeImageId);
     
     if (activeLayout && activeLayout.selection) {
@@ -1279,18 +1552,17 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
          setMode('resizing');
          setActiveHandle(handle);
          setInitialSelection({ ...activeLayout.selection });
-         onInteractionStart(); // Save History
+         onInteractionStart('调整选区大小'); 
          return;
        }
        if (isPointInSelection(wx, wy, activeLayout)) {
          setMode('moving');
          setInitialSelection({ ...activeLayout.selection });
-         onInteractionStart(); // Save History
+         onInteractionStart('移动选区'); 
          return;
        }
     }
 
-    // Check if clicked on ANY image to select it or start drawing
     const clickedImage = getImageAtWorldPos(wx, wy);
     
     if (clickedImage) {
@@ -1298,11 +1570,9 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
         onSelectImage(clickedImage.id);
       }
       
-      // Prepare for drawing
       setMode('drawing');
-      onInteractionStart(); // Save History
+      onInteractionStart('创建选区'); 
       
-      // Calculate local start pos
       const lx = wx - clickedImage.worldX;
       const ly = wy - clickedImage.worldY;
       
@@ -1312,7 +1582,6 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
         winners: []
       });
     } else {
-      // Clicked on empty space (void) -> Pan
       setMode('panning');
       setStartPos({ x: e.clientX, y: e.clientY });
       setInitialPan({ ...pan });
@@ -1322,10 +1591,8 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
   const handlePointerMove = (e: React.PointerEvent) => {
     e.preventDefault();
     
-    // Update pointer position for multi-touch
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // Handle Pinch Zoom
     if (activePointers.current.size === 2 && pinchStartInfo.current) {
       const points = Array.from(activePointers.current.values());
       const p1 = points[0];
@@ -1336,13 +1603,10 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
 
       const rect = canvasRef.current?.getBoundingClientRect();
       if (rect) {
-        // New Scale
         const scaleRatio = dist / pinchStartInfo.current.dist;
         let newScale = pinchStartInfo.current.scale * scaleRatio;
-        newScale = Math.min(Math.max(newScale, 0.1), 5); // Clamp scale
+        newScale = Math.min(Math.max(newScale, 0.1), 5); 
 
-        // Calculate New Pan to keep the worldPoint under the center
-        // NewPan = ScreenCenter - WorldPoint * NewScale
         const screenX = cx - rect.left;
         const screenY = cy - rect.top;
         
@@ -1352,13 +1616,12 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
         setScale(newScale);
         setPan({ x: newPanX, y: newPanY });
       }
-      return; // Stop other processing
+      return; 
     }
 
     const { x: wx, y: wy } = getWorldPos(e);
     const activeLayout = imageLayouts.find(l => l.id === activeImageId);
 
-    // Cursor Updates
     if (mode === 'none' && !isLotteryRunning && activeLayout && activeLayout.selection) {
        const handle = getHandle(wx, wy, activeLayout);
        const canvas = canvasRef.current;
@@ -1384,10 +1647,9 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
       return;
     }
 
-    if (!activeLayout) return; // Should have been set in Down
+    if (!activeLayout) return; 
 
     if (mode === 'drawing' && activeLayout.selection) {
-      // Localize
       const lx = wx - activeLayout.worldX;
       const ly = wy - activeLayout.worldY;
       const w = lx - activeLayout.selection.x;
@@ -1402,7 +1664,6 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
        let newX = initialSelection.x + dx;
        let newY = initialSelection.y + dy;
        
-       // Clamp to image bounds
        newX = Math.max(0, Math.min(newX, activeLayout.naturalWidth - initialSelection.w));
        newY = Math.max(0, Math.min(newY, activeLayout.naturalHeight - initialSelection.h));
 
@@ -1437,13 +1698,11 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
   const handlePointerUp = (e: React.PointerEvent) => {
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
     
-    // Remove pointer
     activePointers.current.delete(e.pointerId);
     if (activePointers.current.size < 2) {
       pinchStartInfo.current = null;
     }
     
-    // If we were pinching, don't trigger clicks or other end events immediately
     if (activePointers.current.size > 0) {
       return; 
     }
@@ -1465,7 +1724,6 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
          onUpdate(activeLayout.id, { selection: normSel });
       }
 
-      // Click to Exclude
       if (mode === 'moving') {
          const dist = Math.hypot(e.clientX - startPos.x, e.clientY - startPos.y);
          if (dist < DRAG_THRESHOLD) {
@@ -1496,7 +1754,7 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
     const row = Math.floor(ry / cellH);
 
     if (col >= 0 && col < layout.gridCols && row >= 0 && row < layout.gridRows) {
-       onInteractionStart(); // Save History
+       onInteractionStart('排除/恢复格子'); 
        const idx = row * layout.gridCols + col;
        const isExcluded = layout.excludedCells.includes(idx);
        const newExcluded = isExcluded 

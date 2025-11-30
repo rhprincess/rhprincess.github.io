@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { 
   Upload, 
@@ -133,7 +134,7 @@ const formatTime = (ts: number) => {
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
 };
 
-// --- Custom Slider Component (Fixes Mobile Dragging) ---
+// --- Custom Slider Component (Fixes Mobile Dragging & Overflow) ---
 interface CustomSliderProps {
   value: number;
   min: number;
@@ -145,13 +146,20 @@ interface CustomSliderProps {
 
 const CustomSlider: React.FC<CustomSliderProps> = ({ value, min, max, step = 1, onChange, className = "" }) => {
   const ref = useRef<HTMLDivElement>(null);
+  const PADDING = 12; // Half thumb width (w-6 = 24px)
 
   const update = (e: React.PointerEvent) => {
     const rect = ref.current?.getBoundingClientRect();
     if (!rect) return;
-    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-    const pct = x / rect.width;
+    
+    // Effective width for the slider track logic is reduced by padding
+    const effectiveWidth = rect.width - (PADDING * 2);
+    // X relative to the start of the effective track
+    const x = Math.max(0, Math.min(e.clientX - rect.left - PADDING, effectiveWidth));
+    
+    const pct = x / effectiveWidth;
     let val = min + pct * (max - min);
+    
     // Snap
     if (step) val = Math.round(val / step) * step;
     val = Math.max(min, Math.min(max, val));
@@ -161,7 +169,8 @@ const CustomSlider: React.FC<CustomSliderProps> = ({ value, min, max, step = 1, 
   return (
     <div 
       ref={ref}
-      className={`relative h-10 flex items-center select-none touch-none cursor-pointer ${className}`}
+      // Added w-full to prevent overflow
+      className={`relative h-10 w-full flex items-center select-none touch-none cursor-pointer group px-[12px] ${className}`}
       onPointerDown={(e) => {
         e.preventDefault();
         e.currentTarget.setPointerCapture(e.pointerId);
@@ -173,23 +182,29 @@ const CustomSlider: React.FC<CustomSliderProps> = ({ value, min, max, step = 1, 
       }}
     >
       {/* Track */}
-      <div className="absolute inset-x-0 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+      <div className="absolute inset-x-3 h-2 bg-white/40 backdrop-blur-sm rounded-full overflow-hidden border border-white/40 shadow-inner">
          <div 
-           className="h-full bg-wechat transition-all duration-75 ease-out" 
+           className="h-full bg-gradient-to-r from-wechat-light to-wechat transition-all duration-75 ease-out shadow-[0_0_10px_rgba(7,193,96,0.5)]" 
            style={{ width: `${(value - min) / (max - min) * 100}%` }} 
          />
       </div>
       {/* Thumb */}
       <div 
-        className="absolute h-6 w-6 bg-white border border-gray-300 shadow-md rounded-full top-1/2 -translate-y-1/2 -translate-x-1/2 transition-transform active:scale-110"
-        style={{ left: `${(value - min) / (max - min) * 100}%` }}
-      />
+        className="absolute h-6 w-6 bg-white border border-white/60 shadow-[0_4px_12px_rgba(0,0,0,0.15)] rounded-full top-1/2 -translate-y-1/2 -translate-x-1/2 transition-transform group-active:scale-110 backdrop-blur-md flex items-center justify-center"
+        style={{ left: `calc(12px + ${(value - min) / (max - min)} * (100% - 24px))` }}
+      >
+        <div className="w-2 h-2 rounded-full bg-wechat/50"></div>
+      </div>
     </div>
   );
 };
 
 // --- Confetti Component ---
-const ConfettiSystem: React.FC = () => {
+interface ConfettiSystemProps {
+  origin?: { x: number, y: number };
+}
+
+const ConfettiSystem: React.FC<ConfettiSystemProps> = ({ origin }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -201,6 +216,9 @@ const ConfettiSystem: React.FC = () => {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
 
+    const startX = origin ? origin.x : window.innerWidth / 2;
+    const startY = origin ? origin.y : window.innerHeight / 2;
+
     const particles: {
       x: number; y: number; vx: number; vy: number; 
       color: string; size: number; rotation: number; vRotation: number;
@@ -210,10 +228,10 @@ const ConfettiSystem: React.FC = () => {
 
     for (let i = 0; i < 150; i++) {
       particles.push({
-        x: window.innerWidth / 2,
-        y: window.innerHeight / 2,
-        vx: (Math.random() - 0.5) * 15,
-        vy: (Math.random() - 1) * 15 - 5,
+        x: startX,
+        y: startY,
+        vx: (Math.random() - 0.5) * 20, // Spread out more
+        vy: (Math.random() - 1) * 20 - 5, // Upwards burst
         color: colors[Math.floor(Math.random() * colors.length)],
         size: Math.random() * 8 + 4,
         rotation: Math.random() * 360,
@@ -222,8 +240,8 @@ const ConfettiSystem: React.FC = () => {
     }
 
     let animationId: number;
-    const gravity = 0.3;
-    const drag = 0.98;
+    const gravity = 0.4;
+    const drag = 0.96;
 
     const render = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -245,7 +263,7 @@ const ConfettiSystem: React.FC = () => {
         ctx.restore();
       }
 
-      if (particles.length > 0 && particles.some(p => p.y < canvas.height)) {
+      if (particles.length > 0 && particles.some(p => p.y < canvas.height + 20)) {
          animationId = requestAnimationFrame(render);
       }
     };
@@ -254,7 +272,7 @@ const ConfettiSystem: React.FC = () => {
 
     const timer = setTimeout(() => {
        cancelAnimationFrame(animationId);
-    }, 4000);
+    }, 5000);
 
     const handleResize = () => {
       canvas.width = window.innerWidth;
@@ -267,7 +285,7 @@ const ConfettiSystem: React.FC = () => {
       clearTimeout(timer);
       window.removeEventListener('resize', handleResize);
     };
-  }, []);
+  }, [origin]); // Re-run if origin changes (though usually mounts once)
 
   return <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none z-[100]" />;
 };
@@ -285,6 +303,7 @@ const App: React.FC = () => {
   const [globalWinners, setGlobalWinners] = useState<WinnerResult[]>([]);
   const [gridColor, setGridColor] = useState<string>('rgba(255, 255, 255, 0.6)');
   const [showConfetti, setShowConfetti] = useState(false);
+  const [isWinnersExpanded, setIsWinnersExpanded] = useState(true);
   
   // History State
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -308,6 +327,23 @@ const App: React.FC = () => {
   
   const { layouts: imageLayouts } = useMemo(() => getImagesLayout(images), [images]);
 
+  // Calculate center of active image for confetti
+  const activeImageCenter = useMemo(() => {
+    if (!activeImageId) return { x: window.innerWidth/2, y: window.innerHeight/2 };
+    const layout = imageLayouts.find(l => l.id === activeImageId);
+    if (!layout) return { x: window.innerWidth/2, y: window.innerHeight/2 };
+    
+    const canvasContainer = document.getElementById('canvas-container');
+    const rect = canvasContainer?.getBoundingClientRect();
+    const offsetX = rect ? rect.left : 0;
+    const offsetY = rect ? rect.top : 0;
+
+    const centerX = offsetX + pan.x + (layout.worldX + layout.naturalWidth / 2) * scale;
+    const centerY = offsetY + pan.y + (layout.worldY + layout.naturalHeight / 2) * scale;
+    
+    return { x: centerX, y: centerY };
+  }, [activeImageId, imageLayouts, pan, scale]);
+
   const totalEligibleCount = useMemo(() => {
     return images.reduce((acc, img) => {
       if (!img.selection) return acc;
@@ -324,40 +360,26 @@ const App: React.FC = () => {
         action, 
         timestamp: Date.now() 
       };
-      // Keep linear history for the log view
       const newHist = [...prev, newEntry];
       if (newHist.length > 100) return newHist.slice(newHist.length - 100);
       return newHist;
     });
-    setFuture([]); // Clear redo stack on new action
+    setFuture([]); 
   }, [images]);
 
   const undo = useCallback(() => {
     if (history.length === 0) return;
-    const previous = history[history.length - 1]; // Current state representation
+    const previous = history[history.length - 1]; 
     const newHistory = history.slice(0, -1);
     
-    // In our "Log" model, undo acts on the stack.
-    // We move the current state to future.
     setFuture(prev => [{ images, action: '撤销前状态', timestamp: Date.now() }, ...prev]);
-    
-    // Restore the one before previous? 
-    // Wait, history[last] IS the state before the current modification if we save *before* change?
-    // Usually saveHistory is called *after* change.
-    // If I have [StateA, StateB]. Current is StateB.
-    // Undo should go to StateA.
-    // StateA is history[length-2].
-    // If I only have StateB in history (because initial state wasn't pushed?), we need to be careful.
     
     if (newHistory.length > 0) {
       setImages(newHistory[newHistory.length - 1].images);
       setHistory(newHistory);
     } else {
-       // If empty, maybe clear images? Or just don't allow undoing the first state?
-       // Let's assume initial state is handled.
        if (history.length === 1) {
-           // Reached start
-           setImages([]); // Or some initial state
+           setImages([]); 
            setHistory([]);
        }
     }
@@ -373,7 +395,6 @@ const App: React.FC = () => {
     setFuture(newFuture);
   }, [future]);
 
-  // Non-destructive restore
   const restoreHistory = (index: number) => {
     const entry = history[index];
     if (!entry) return;
@@ -381,8 +402,6 @@ const App: React.FC = () => {
     const newImages = entry.images;
     setImages(newImages);
     
-    // Append a new "Restored" action to history so we don't lose the "future" events relative to the restored point
-    // This effectively branches/linearizes the history.
     setHistory(prev => [
       ...prev, 
       { 
@@ -391,7 +410,7 @@ const App: React.FC = () => {
         timestamp: Date.now() 
       }
     ]);
-    setFuture([]); // Clear future as we have taken a new path
+    setFuture([]); 
     
     if (window.innerWidth < 768) {
       setIsMobileSettingsOpen(false);
@@ -470,21 +489,12 @@ const App: React.FC = () => {
               excludedCells: [],
               winners: []
             }];
-            // Save history AFTER state update in a useEffect or by passing next directly?
-            // To keep it simple, we'll use a timeout or assume the last update triggers history if we were tracking strict state changes.
-            // Here we just manually call saveHistory with the computed next state.
-            // But we have a loop here. 
-            // Better to process all then update.
             return next;
           });
         };
       });
       
-      // Since image loading is async, we can't easily saveHistory with the *final* state here immediately.
-      // We will rely on the user seeing the image appear. 
-      // A robust way is to just push a generic "Add Image" marker after a delay
       setTimeout(() => {
-         // This is a bit loose but works for this level of app
          setImages(current => {
            saveHistory('导入图片', current);
            if (current.length > 0) setActiveImageId(current[current.length - 1].id);
@@ -632,13 +642,10 @@ const App: React.FC = () => {
       return;
     }
     
-    // We save history BEFORE starting, or effectively the "Start" state is just the current state.
-    // But we might want to record that a lottery happened? 
-    // Usually lottery doesn't change setup state, just result state which is ephemeral until end.
-    
     setIsMobileSettingsOpen(false);
     setIsMobileResultsOpen(false);
     setShowConfetti(false);
+    setIsWinnersExpanded(true); // Auto expand on desktop
 
     setImages(prev => prev.map(img => ({ ...img, winners: [] })));
     setGlobalWinners([]);
@@ -678,9 +685,6 @@ const App: React.FC = () => {
               .map(w => w.cellIndex);
             return { ...img, winners: imgWinners };
           });
-          // Save history with results?
-          // saveHistory('抽奖结果', next); // Can't call inside loop easily without ref issues
-          // We'll skip saving result to history for now as it's a result, not configuration.
           return next;
         });
         
@@ -706,62 +710,73 @@ const App: React.FC = () => {
   // --- Render Parts ---
 
   const ImageList = () => (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap gap-3">
       {images.map((img, idx) => (
         <div 
           key={img.id}
           onClick={() => handleSelectImage(img.id)}
-          className={`relative flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${activeImageId === img.id ? 'border-wechat ring-2 ring-wechat/20' : 'border-transparent hover:border-gray-300'}`}
+          // Use border-4 inside box-sizing instead of ring to prevent corner leak
+          className={`relative flex-shrink-0 w-20 h-20 rounded-2xl overflow-hidden cursor-pointer transition-all duration-300 active:scale-95 box-border
+            ${activeImageId === img.id 
+              ? 'scale-90 border-4 border-wechat shadow-lg shadow-wechat/30' 
+              : 'border border-white/30 hover:border-white/80 hover:scale-105 shadow-sm'}`}
         >
           <img src={img.src} alt="" className="w-full h-full object-cover" />
           <button 
             onClick={(e) => { e.stopPropagation(); removeImage(img.id); }}
-            className="absolute top-0 right-0 bg-red-500 text-white p-1 rounded-bl hover:bg-red-600 z-10"
+            className="absolute top-0 right-0 bg-red-500/60 backdrop-blur-md text-white p-1 rounded-bl-xl hover:bg-red-600/80 z-10 transition-colors"
           >
             <X size={12} />
           </button>
-          <div className="absolute bottom-0 left-0 bg-black/50 text-white text-[10px] px-1 w-full text-center truncate">
+          <div className="absolute bottom-0 left-0 bg-black/30 backdrop-blur-md text-white text-[10px] px-1 w-full text-center truncate py-0.5">
             图 {idx + 1}
           </div>
         </div>
       ))}
       
-      <label className="flex-shrink-0 w-20 h-20 rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center cursor-pointer hover:border-wechat hover:bg-wechat-light transition-colors text-gray-400 hover:text-wechat">
+      <label className="flex-shrink-0 w-20 h-20 rounded-2xl border-2 border-dashed border-white/50 flex flex-col items-center justify-center cursor-pointer hover:border-wechat hover:bg-wechat/5 transition-all text-gray-400 hover:text-wechat bg-white/20 backdrop-blur-sm shadow-inner group active:scale-95 duration-300">
         <input type="file" multiple accept="image/*" onChange={handleImageUpload} className="hidden" />
-        <Plus size={24} />
-        <span className="text-[10px] mt-1">添加图片</span>
+        <Plus size={24} className="group-hover:scale-110 transition-transform" />
+        <span className="text-[10px] mt-1 font-medium">添加图片</span>
       </label>
     </div>
   );
 
   const HistoryList = () => (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {history.length === 0 ? (
-        <p className="text-gray-400 text-sm text-center py-4">暂无历史记录</p>
+        <div className="flex flex-col items-center justify-center py-8 text-gray-400">
+           <div className="bg-white/30 p-4 rounded-full mb-3 backdrop-blur-sm">
+              <History size={24} className="opacity-50" />
+           </div>
+           <p className="text-sm">暂无历史记录</p>
+        </div>
       ) : (
         [...history].reverse().map((entry, index) => {
           const originalIndex = history.length - 1 - index;
-          // Highlight if it is the latest entry (current state)
           const isCurrent = originalIndex === history.length - 1;
           
           return (
             <div 
               key={index} 
               onClick={() => restoreHistory(originalIndex)}
-              className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all
-                ${isCurrent ? 'bg-wechat-light border-wechat' : 'bg-gray-50 border-gray-100 hover:border-gray-300 active:bg-gray-100'}`}
+              className={`flex items-center justify-between p-3.5 rounded-2xl cursor-pointer transition-all duration-300 border active:scale-95
+                ${isCurrent 
+                  ? 'bg-wechat/10 border-wechat/30 shadow-lg shadow-wechat/10' 
+                  : 'bg-white/40 border-white/40 hover:bg-white/60 hover:shadow-md hover:scale-[1.02]'}`}
             >
               <div className="flex items-center gap-3">
-                 <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isCurrent ? 'bg-wechat text-white' : 'bg-gray-200 text-gray-500'}`}>
-                    {isCurrent ? <CheckCircle2 size={16} /> : <RotateCcw size={16} />}
+                 <div className={`w-9 h-9 rounded-full flex items-center justify-center shadow-inner text-white
+                    ${isCurrent ? 'bg-gradient-to-br from-wechat to-wechat-dark' : 'bg-gray-200'}`}>
+                    {isCurrent ? <CheckCircle2 size={16} /> : <RotateCcw size={16} className="text-gray-500" />}
                  </div>
                  <div>
-                    <p className={`text-sm font-medium ${isCurrent ? 'text-wechat-dark' : 'text-gray-700'}`}>{entry.action}</p>
-                    <p className="text-xs text-gray-400">{formatTime(entry.timestamp)}</p>
+                    <p className={`text-sm font-bold ${isCurrent ? 'text-wechat-dark' : 'text-gray-700'}`}>{entry.action}</p>
+                    <p className="text-xs text-gray-400 font-medium">{formatTime(entry.timestamp)}</p>
                  </div>
               </div>
               {!isCurrent && (
-                <button className="text-xs text-wechat font-medium px-2 py-1 bg-white border border-wechat/20 rounded hover:bg-wechat hover:text-white transition-colors">
+                <button className="text-xs text-wechat font-bold px-3 py-1.5 bg-white/60 border border-wechat/20 rounded-xl hover:bg-wechat hover:text-white transition-colors shadow-sm backdrop-blur-sm">
                    恢复
                 </button>
               )}
@@ -774,24 +789,24 @@ const App: React.FC = () => {
 
   const NumberControl = ({ label, value, onChange, min, max }: { label: string, value: number, onChange: (val: number) => void, min: number, max: number }) => (
     <div>
-      <label className="block text-xs text-gray-500 mb-1">{label}</label>
-      <div className="flex items-center border border-gray-300 rounded overflow-hidden h-8">
+      <label className="block text-xs font-bold text-gray-500/80 mb-2 uppercase tracking-wide">{label}</label>
+      <div className="flex items-center border border-white/50 rounded-xl overflow-hidden h-10 shadow-sm bg-white/40 backdrop-blur-md">
         <button 
           onClick={() => onChange(Math.max(min, value - 1))}
-          className="px-3 bg-gray-50 hover:bg-gray-100 active:bg-gray-200 border-r border-gray-300 text-gray-600 h-full flex items-center justify-center"
+          className="px-3 bg-white/30 hover:bg-white/60 active:bg-white/80 border-r border-white/30 text-gray-600 h-full flex items-center justify-center transition-colors active:scale-95"
         >
           <Minus size={14} />
         </button>
         <input 
           type="number" 
-          className="w-full text-center outline-none text-sm appearance-none bg-white h-full"
+          className="w-full text-center outline-none text-sm appearance-none bg-transparent h-full font-bold text-gray-700"
           value={value}
           onChange={(e) => onChange(Math.max(min, Math.min(max, parseInt(e.target.value) || min)))}
           min={min} max={max}
         />
         <button 
           onClick={() => onChange(Math.min(max, value + 1))}
-          className="px-3 bg-gray-50 hover:bg-gray-100 active:bg-gray-200 border-l border-gray-300 text-gray-600 h-full flex items-center justify-center"
+          className="px-3 bg-white/30 hover:bg-white/60 active:bg-white/80 border-l border-white/30 text-gray-600 h-full flex items-center justify-center transition-colors active:scale-95"
         >
           <Plus size={14} />
         </button>
@@ -800,13 +815,13 @@ const App: React.FC = () => {
   );
 
   const SettingsPanel = () => (
-    <div className="space-y-6">
-       <section className={`transition-opacity ${!activeImage ? 'opacity-50 pointer-events-none' : ''}`}>
-        <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-          <Grid3X3 size={14} /> 当前图片网格设置
+    <div className="space-y-8">
+       <section className={`transition-all duration-300 ${!activeImage ? 'opacity-50 grayscale pointer-events-none' : ''}`}>
+        <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+          <div className="p-1.5 rounded-lg bg-blue-500/10 text-blue-500"><Grid3X3 size={14} /></div> 当前图片网格
         </h2>
         
-        <div className="space-y-4">
+        <div className="space-y-5">
           <div className="grid grid-cols-2 gap-4">
              <NumberControl 
                 label="行数 (Rows)"
@@ -835,31 +850,34 @@ const App: React.FC = () => {
           </div>
 
             <div>
-              <label className="block text-xs text-gray-500 mb-1">网格颜色</label>
-              <div className="flex gap-2">
+              <label className="block text-xs font-bold text-gray-500/80 mb-2 uppercase tracking-wide">网格颜色</label>
+              <div className="flex gap-3 bg-white/30 p-2 rounded-2xl border border-white/40 inline-flex backdrop-blur-sm">
                 {['rgba(255, 255, 255, 0.6)', 'rgba(0, 0, 0, 0.6)', 'rgba(7, 193, 96, 0.6)', 'rgba(255, 0, 0, 0.6)'].map(color => (
                   <button
                     key={color}
                     onClick={() => setGridColor(color)}
-                    className={`w-6 h-6 rounded-full border border-gray-300 ${gridColor === color ? 'ring-2 ring-offset-1 ring-gray-400' : ''}`}
+                    className={`w-7 h-7 rounded-full border border-white/60 shadow-lg transition-all duration-300 active:scale-95 flex items-center justify-center
+                       ${gridColor === color ? 'ring-2 ring-offset-2 ring-offset-white/50 ring-blue-400 scale-110' : 'hover:scale-105'}`}
                     style={{ backgroundColor: color }}
-                  />
+                  >
+                    {gridColor === color && <div className="w-2 h-2 rounded-full bg-white shadow-sm"></div>}
+                  </button>
                 ))}
               </div>
             </div>
         </div>
       </section>
 
-      <section className="pt-4 border-t border-gray-100">
-          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-          <Settings2 size={14} /> 抽奖全局设置
+      <section className="pt-6 border-t border-white/30">
+          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+           <div className="p-1.5 rounded-lg bg-purple-500/10 text-purple-500"><Settings2 size={14} /></div> 全局抽奖设置
         </h2>
 
-        <div className="space-y-4">
+        <div className="space-y-5">
             <div>
-              <label className="block text-xs text-gray-500 mb-1">中奖人数</label>
-              <div className="flex items-center gap-2">
-                <div className="flex-1">
+              <label className="block text-xs font-bold text-gray-500/80 mb-2 uppercase tracking-wide">中奖人数</label>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 min-w-0">
                   <CustomSlider 
                     min={1} 
                     max={Math.max(1, totalEligibleCount)} 
@@ -867,25 +885,22 @@ const App: React.FC = () => {
                     onChange={(val) => setWinnerCount(val)}
                   />
                 </div>
-                <input 
-                  type="number"
-                  min={1}
-                  max={totalEligibleCount}
-                  value={winnerCount}
-                  onChange={(e) => setWinnerCount(Math.max(1, parseInt(e.target.value)))}
-                  className="w-12 border border-gray-300 rounded px-1 py-1 text-center text-sm h-8"
-                />
+                <div className="w-14 h-10 border border-white/50 rounded-xl flex items-center justify-center text-sm font-bold bg-white/40 backdrop-blur-md shadow-inner text-gray-700 flex-shrink-0">
+                   {winnerCount}
+                </div>
               </div>
             </div>
 
             <div>
-              <label className="block text-xs text-gray-500 mb-1 flex justify-between">
+              <label className="block text-xs font-bold text-gray-500/80 mb-2 uppercase tracking-wide flex justify-between">
                 <span>动画时长 (秒)</span>
-                <span>{animationDuration}s</span>
+                <span className="text-wechat">{animationDuration}s</span>
               </label>
-              <div className="flex items-center gap-2">
-                  <Clock size={16} className="text-gray-400" />
-                  <div className="flex-1">
+              <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-orange-500/10 text-orange-500 flex items-center justify-center flex-shrink-0">
+                     <Clock size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
                     <CustomSlider 
                       min={1} 
                       max={10} 
@@ -897,26 +912,27 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-sm text-gray-600">有效参与数:</span>
-                <span className="font-bold text-wechat text-lg">{totalEligibleCount}</span>
+            <div className="bg-white/40 backdrop-blur-xl p-4 rounded-3xl border border-white/60 shadow-lg shadow-blue-500/5">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm font-bold text-gray-600">有效参与数</span>
+                <span className="font-black text-2xl text-transparent bg-clip-text bg-gradient-to-r from-wechat to-blue-500">{totalEligibleCount}</span>
               </div>
-              <p className="text-[10px] text-gray-400">
-                总格子数: {images.reduce((acc, img) => acc + (img.selection ? img.gridRows * img.gridCols : 0), 0)} | 
-                已排除: {images.reduce((acc, img) => acc + img.excludedCells.length, 0)}
-              </p>
+              <div className="flex justify-between text-[11px] text-gray-500 font-medium bg-white/30 p-2 rounded-xl">
+                 <span>总格子: {images.reduce((acc, img) => acc + (img.selection ? img.gridRows * img.gridCols : 0), 0)}</span>
+                 <span className="w-px h-3 bg-gray-400/30"></span>
+                 <span>已排除: {images.reduce((acc, img) => acc + img.excludedCells.length, 0)}</span>
+              </div>
             </div>
             
-            <div className="grid grid-cols-2 gap-2 pt-2">
+            <div className="grid grid-cols-2 gap-3 pt-2">
               <button 
                 onClick={handleExportConfig}
-                className="flex items-center justify-center gap-2 px-3 py-2 border border-gray-200 rounded text-xs text-gray-600 hover:bg-gray-50 hover:text-wechat transition-colors"
+                className="flex items-center justify-center gap-2 px-3 py-3 border border-white/50 rounded-2xl text-xs font-bold text-gray-600 bg-white/40 hover:bg-white/70 hover:text-wechat hover:shadow-lg hover:border-wechat/30 transition-all backdrop-blur-md active:scale-95"
               >
-                <Download size={14} /> 导出配置
+                <Download size={16} /> 导出配置
               </button>
-              <label className="flex items-center justify-center gap-2 px-3 py-2 border border-gray-200 rounded text-xs text-gray-600 hover:bg-gray-50 hover:text-wechat transition-colors cursor-pointer">
-                <FileJson size={14} /> 导入配置
+              <label className="flex items-center justify-center gap-2 px-3 py-3 border border-white/50 rounded-2xl text-xs font-bold text-gray-600 bg-white/40 hover:bg-white/70 hover:text-wechat hover:shadow-lg hover:border-wechat/30 transition-all backdrop-blur-md cursor-pointer active:scale-95 duration-300">
+                <FileJson size={16} /> 导入配置
                 <input 
                   type="file" 
                   accept=".json" 
@@ -931,7 +947,16 @@ const App: React.FC = () => {
   );
 
   return (
-    <div className="flex flex-col md:flex-row h-screen w-full bg-gray-100 overflow-hidden font-sans text-gray-800">
+    <div className="flex flex-col md:flex-row h-screen w-full overflow-hidden font-sans text-gray-800 bg-[#f0f2f5] relative selection:bg-wechat/30">
+      <div className="absolute inset-0 z-0 pointer-events-none" 
+           style={{
+             background: `
+               radial-gradient(circle at 15% 50%, rgba(7, 193, 96, 0.08), transparent 40%), 
+               radial-gradient(circle at 85% 30%, rgba(59, 130, 246, 0.08), transparent 40%),
+               radial-gradient(circle at 50% 80%, rgba(236, 72, 153, 0.08), transparent 40%)
+             `
+           }}
+      />
       <style>
         {`
           .no-scrollbar::-webkit-scrollbar {
@@ -941,55 +966,66 @@ const App: React.FC = () => {
             -ms-overflow-style: none;
             scrollbar-width: none;
           }
-          @keyframes slide-up {
-             from { transform: translateY(100%); opacity: 0; }
-             to { transform: translateY(0); opacity: 1; }
+          .custom-scrollbar::-webkit-scrollbar {
+             width: 5px;
           }
-          .animate-slide-up {
-             animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+          .custom-scrollbar::-webkit-scrollbar-track {
+             background: transparent;
+          }
+          .custom-scrollbar::-webkit-scrollbar-thumb {
+             background: rgba(0,0,0,0.1);
+             border-radius: 10px;
+          }
+          .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+             background: rgba(0,0,0,0.2);
+          }
+          .glass-panel {
+             background: rgba(255, 255, 255, 0.6);
+             backdrop-filter: blur(24px);
+             -webkit-backdrop-filter: blur(24px);
+             border: 1px solid rgba(255, 255, 255, 0.4);
           }
         `}
       </style>
       
-      {showConfetti && <ConfettiSystem />}
+      {showConfetti && <ConfettiSystem origin={activeImageCenter} />}
       
       {/* Canvas Area */}
-      <div className="absolute inset-0 md:relative md:flex-1 bg-gray-200 overflow-hidden flex flex-col z-0">
+      <div className="absolute inset-0 md:relative md:flex-1 overflow-hidden flex flex-col z-0">
         {/* Floating Toolbar */}
         <div className="
           z-20 flex gap-2 items-center pointer-events-auto
-          fixed top-0 left-0 right-0 bg-white/90 backdrop-blur border-b border-gray-200 px-4 py-3 overflow-x-auto no-scrollbar
-          md:absolute md:top-4 md:left-1/2 md:-translate-x-1/2 md:w-auto md:bg-white/90 md:rounded-full md:shadow-lg md:border md:justify-center md:border-gray-200 md:py-2
+          fixed top-0 left-0 right-0 glass-panel px-4 py-3 overflow-x-auto no-scrollbar
+          md:absolute md:top-6 md:left-1/2 md:-translate-x-1/2 md:w-auto md:rounded-full md:shadow-[0_8px_32px_rgba(0,0,0,0.08)] md:py-2.5 md:px-6
         ">
-           {/* Mobile-only Undo/Redo in top bar if needed, but we put them in desktop sidebar footer */}
-           <div className="md:hidden flex gap-2 border-r border-gray-300 pr-2 mr-1">
-             <button onClick={undo} disabled={history.length === 0} className={`p-1.5 rounded bg-gray-100 ${history.length === 0 ? 'opacity-30' : ''}`}><Undo2 size={16}/></button>
-             <button onClick={redo} disabled={future.length === 0} className={`p-1.5 rounded bg-gray-100 ${future.length === 0 ? 'opacity-30' : ''}`}><Redo2 size={16}/></button>
+           <div className="md:hidden flex gap-2 border-r border-gray-400/20 pr-3 mr-1">
+             <button onClick={undo} disabled={history.length === 0} className={`p-2.5 rounded-full bg-white/40 hover:bg-white/80 transition-all active:scale-95 duration-300 ${history.length === 0 ? 'opacity-30' : ''}`}><Undo2 size={18}/></button>
+             <button onClick={redo} disabled={future.length === 0} className={`p-2.5 rounded-full bg-white/40 hover:bg-white/80 transition-all active:scale-95 duration-300 ${future.length === 0 ? 'opacity-30' : ''}`}><Redo2 size={18}/></button>
            </div>
 
            <button 
             onClick={() => setIsPanningMode(false)}
-            className={`p-2 rounded-full transition-colors flex-shrink-0 ${!isPanningMode ? 'bg-wechat text-white' : 'hover:bg-gray-100 text-gray-600'}`}
+            className={`p-2.5 rounded-full transition-all duration-300 shadow-sm active:scale-95 ${!isPanningMode ? 'bg-wechat text-white shadow-wechat/30 scale-110' : 'bg-white/40 hover:bg-white/80 text-gray-600'}`}
             title="选择模式"
           >
             <MousePointer2 size={18} />
           </button>
           <button 
             onClick={() => setIsPanningMode(true)}
-            className={`p-2 rounded-full transition-colors flex-shrink-0 ${isPanningMode ? 'bg-wechat text-white' : 'hover:bg-gray-100 text-gray-600'}`}
+            className={`p-2.5 rounded-full transition-all duration-300 shadow-sm active:scale-95 ${isPanningMode ? 'bg-wechat text-white shadow-wechat/30 scale-110' : 'bg-white/40 hover:bg-white/80 text-gray-600'}`}
             title="移动视图 (空格键按住)"
           >
             <Move size={18} />
           </button>
-          <div className="w-px h-6 bg-gray-300 mx-1 flex-shrink-0"></div>
-          <button onClick={() => setScale(s => Math.min(s + 0.05, 5))} className="p-2 hover:bg-gray-100 rounded-full text-gray-600 flex-shrink-0">
+          <div className="w-px h-6 bg-gray-400/20 mx-2 flex-shrink-0"></div>
+          <button onClick={() => setScale(s => Math.min(s + 0.05, 5))} className="p-2.5 hover:bg-white/80 bg-white/40 rounded-full text-gray-700 flex-shrink-0 transition-all active:scale-95 duration-300">
             <ZoomIn size={18} />
           </button>
-          <span className="text-xs font-medium w-12 text-center flex-shrink-0">{Math.round(scale * 100)}%</span>
-          <button onClick={() => setScale(s => Math.max(s - 0.05, 0.2))} className="p-2 hover:bg-gray-100 rounded-full text-gray-600 flex-shrink-0">
+          <span className="text-xs font-bold w-12 text-center flex-shrink-0 tabular-nums text-gray-600 bg-white/30 py-1 rounded-lg">{Math.round(scale * 100)}%</span>
+          <button onClick={() => setScale(s => Math.max(s - 0.05, 0.2))} className="p-2.5 hover:bg-white/80 bg-white/40 rounded-full text-gray-700 flex-shrink-0 transition-all active:scale-95 duration-300">
             <ZoomOut size={18} />
           </button>
-           <button onClick={() => { if(activeImageId) zoomToImage(activeImageId); else { setScale(1); setPan({x:0, y:0}); } }} className="ml-2 text-xs text-wechat font-medium hover:underline flex-shrink-0 whitespace-nowrap">
+           <button onClick={() => { if(activeImageId) zoomToImage(activeImageId); else { setScale(1); setPan({x:0, y:0}); } }} className="ml-4 text-xs text-wechat font-bold hover:bg-wechat hover:text-white transition-all flex-shrink-0 whitespace-nowrap bg-wechat/10 px-4 py-2 rounded-full border border-wechat/20 active:scale-95 duration-300">
             重置
           </button>
         </div>
@@ -997,9 +1033,11 @@ const App: React.FC = () => {
         <div className="flex-1 relative overflow-hidden cursor-crosshair touch-none" id="canvas-container">
              {images.length === 0 ? (
                <div className="flex items-center justify-center h-full flex-col text-gray-400 p-8 text-center pointer-events-none">
-                 <ImageIcon size={64} className="mb-4 opacity-50" />
-                 <p className="text-lg font-medium">还没有图片</p>
-                 <p className="text-sm mt-2">点击右侧(桌面)或下方(手机)添加图片</p>
+                 <div className="bg-white/40 p-8 rounded-[2rem] mb-6 shadow-xl shadow-blue-500/5 backdrop-blur-md border border-white/50">
+                   <ImageIcon size={64} className="opacity-40 text-gray-500" />
+                 </div>
+                 <p className="text-xl font-bold text-gray-600/80 tracking-tight">准备开始</p>
+                 <p className="text-sm mt-2 text-gray-400 font-medium">点击右侧(桌面)或下方(手机)添加图片</p>
                </div>
              ) : (
                <CanvasEditor 
@@ -1013,17 +1051,15 @@ const App: React.FC = () => {
                   }}
                   onSelectImage={handleSelectImage}
                   onInteractionStart={(action) => {
-                    // Start saves current state before mutation in Canvas? 
-                    // Canvas updates live, so we typically save result on end.
-                    // But onInteractionStart is called on down. 
-                    // Let's rely on CanvasEditor to call this properly.
-                    // For now, simple interaction logging:
                     saveHistory(action);
                   }}
                   scale={scale}
                   setScale={setScale}
                   pan={pan}
                   setPan={setPan}
+                  setMode={(m) => {
+                    // Helper to force mode, e.g. continue panning
+                  }}
                   isPanningMode={isPanningMode}
                   gridColor={gridColor}
                   tempFlasher={tempFlasher}
@@ -1034,49 +1070,55 @@ const App: React.FC = () => {
       </div>
 
       {/* --- Desktop Sidebar --- */}
-      <div className="hidden md:flex w-80 bg-white border-l border-gray-200 flex-col z-10 shadow-xl relative h-full">
-        <div className="p-4 border-b border-gray-100 bg-gray-50">
-          <h1 className="font-bold text-lg text-gray-800 flex items-center gap-2 mb-3">
-             <Trophy className="text-wechat" size={20} /> 抽奖助手
+      <div className="hidden md:flex w-96 glass-panel border-l-0 md:border-l flex-col z-10 shadow-[0_0_40px_rgba(0,0,0,0.05)] relative h-full overflow-hidden">
+        {/* Header */}
+        <div className="p-5 border-b border-white/30 flex-shrink-0 bg-white/30">
+          <h1 className="font-black text-xl text-gray-800 flex items-center gap-3 mb-5">
+             <div className="bg-gradient-to-br from-wechat to-[#05a350] text-white p-2 rounded-xl shadow-lg shadow-wechat/30">
+               <Trophy size={20} />
+             </div>
+             <span className="bg-gradient-to-r from-gray-800 to-gray-500 bg-clip-text text-transparent tracking-tight">抽奖助手</span>
           </h1>
           
           {/* Desktop Tabs */}
-          <div className="flex bg-gray-200 p-1 rounded-lg">
+          <div className="flex bg-gray-200/40 p-1.5 rounded-2xl backdrop-blur-sm shadow-inner">
             <button 
               onClick={() => setDesktopTab('images')}
-              className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${desktopTab === 'images' ? 'bg-white text-wechat shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all duration-300 ${desktopTab === 'images' ? 'bg-white text-wechat shadow-lg shadow-gray-200/50' : 'text-gray-500 hover:text-gray-700 hover:bg-white/30 active:scale-95'}`}
             >
               图片
             </button>
             <button 
               onClick={() => setDesktopTab('settings')}
-              className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${desktopTab === 'settings' ? 'bg-white text-wechat shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all duration-300 ${desktopTab === 'settings' ? 'bg-white text-wechat shadow-lg shadow-gray-200/50' : 'text-gray-500 hover:text-gray-700 hover:bg-white/30 active:scale-95'}`}
             >
               设置
             </button>
             <button 
               onClick={() => setDesktopTab('history')}
-              className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${desktopTab === 'history' ? 'bg-white text-wechat shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all duration-300 ${desktopTab === 'history' ? 'bg-white text-wechat shadow-lg shadow-gray-200/50' : 'text-gray-500 hover:text-gray-700 hover:bg-white/30 active:scale-95'}`}
             >
               记录
             </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+        {/* Content - Fixed Scroll Area */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-5 custom-scrollbar">
            {desktopTab === 'images' && <ImageList />}
            {desktopTab === 'settings' && <SettingsPanel />}
            {desktopTab === 'history' && <HistoryList />}
         </div>
 
-        <div className="p-4 border-t border-gray-200 bg-gray-50 flex-shrink-0 space-y-3">
+        {/* Footer */}
+        <div className="p-5 border-t border-white/40 bg-white/40 flex-shrink-0 space-y-4 backdrop-blur-md">
            {/* Desktop Undo/Redo/Reset Controls */}
            <div className="flex items-center justify-between text-gray-500 text-xs px-1">
              <div className="flex gap-2">
-                <button onClick={undo} disabled={history.length === 0} className="hover:text-wechat disabled:opacity-30" title="撤销"><Undo2 size={16} /></button>
-                <button onClick={redo} disabled={future.length === 0} className="hover:text-wechat disabled:opacity-30" title="重做"><Redo2 size={16} /></button>
+                <button onClick={undo} disabled={history.length === 0} className="hover:text-wechat disabled:opacity-30 transition-all duration-300 p-2 rounded-xl hover:bg-white/60 bg-white/20 border border-white/40 active:scale-95" title="撤销"><Undo2 size={16} /></button>
+                <button onClick={redo} disabled={future.length === 0} className="hover:text-wechat disabled:opacity-30 transition-all duration-300 p-2 rounded-xl hover:bg-white/60 bg-white/20 border border-white/40 active:scale-95" title="重做"><Redo2 size={16} /></button>
              </div>
-             <button onClick={() => { setScale(1); setPan({x:0, y:0}); }} className="flex items-center gap-1 hover:text-wechat" title="重置视图">
+             <button onClick={() => { setScale(1); setPan({x:0, y:0}); }} className="flex items-center gap-1 hover:text-wechat transition-all duration-300 px-3 py-2 rounded-xl hover:bg-white/60 bg-white/20 border border-white/40 font-bold active:scale-95" title="重置视图">
                <RotateCcw size={14} /> 重置视图
              </button>
            </div>
@@ -1084,30 +1126,40 @@ const App: React.FC = () => {
            <button 
             onClick={startLottery}
             disabled={isLotteryRunning || totalEligibleCount === 0}
-            className={`w-full py-3 rounded-lg flex items-center justify-center gap-2 font-bold text-white transition-all transform active:scale-95 shadow-md
-              ${isLotteryRunning || totalEligibleCount === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-wechat hover:bg-wechat-dark shadow-wechat/30'}`}
+            className={`w-full py-4 rounded-[1.2rem] flex items-center justify-center gap-2 font-bold text-white transition-all transform active:scale-[0.98] shadow-xl text-lg relative overflow-hidden group
+              ${isLotteryRunning || totalEligibleCount === 0 ? 'bg-gray-400 cursor-not-allowed shadow-none opacity-60' : 'bg-gradient-to-r from-wechat to-[#05a350] hover:brightness-105 shadow-wechat/40'}`}
            >
-             {isLotteryRunning ? '抽奖中...' : <><Play size={20} fill="currentColor" /> 开始抽奖</>}
+             <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+             {isLotteryRunning ? '抽奖中...' : <><Play size={22} fill="currentColor" className="relative z-10" /> <span className="relative z-10">开始抽奖</span></>}
            </button>
 
            {globalWinners.length > 0 && !isLotteryRunning && (
              <div className="animate-fade-in-up">
-               <h3 className="font-bold text-gray-700 mb-2 flex items-center gap-2 text-sm">
-                 <CheckCircle2 size={16} className="text-wechat" /> 中奖名单 ({globalWinners.length})
-               </h3>
-               <div 
-                  className="grid grid-rows-5 grid-flow-col gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-gray-300"
-                  style={{ maxHeight: '180px' }} 
-                >
-                 {globalWinners.map((w, i) => (
+               <button 
+                 onClick={() => setIsWinnersExpanded(!isWinnersExpanded)}
+                 className="w-full font-bold text-gray-700 mb-2 flex items-center justify-between text-xs uppercase tracking-wider bg-white/30 p-2 rounded-xl hover:bg-white/50 transition-colors"
+               >
+                 <div className="flex items-center gap-2">
+                    <CheckCircle2 size={16} className="text-wechat" /> 中奖名单 ({globalWinners.length})
+                 </div>
+                 {isWinnersExpanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+               </button>
+               
+               <div className={`transition-all duration-300 ease-in-out overflow-hidden ${isWinnersExpanded ? 'max-h-48 opacity-100' : 'max-h-0 opacity-0'}`}>
                    <div 
-                    key={i} 
-                    className="w-24 flex-shrink-0 bg-white border border-wechat/50 text-wechat px-2 py-1.5 rounded shadow-sm text-xs font-medium text-center whitespace-nowrap hover:bg-wechat-light cursor-default"
-                    title={`图${w.imageIndex} - 格子 #${w.cellIndex + 1}`}
-                   >
-                     图{w.imageIndex} - #{w.cellIndex + 1}
+                      className="grid grid-rows-5 grid-flow-col gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-gray-300/50 pt-1"
+                      style={{ maxHeight: '180px' }} 
+                    >
+                     {globalWinners.map((w, i) => (
+                       <div 
+                        key={i} 
+                        className="w-24 flex-shrink-0 bg-white/60 border border-white/60 text-wechat-dark px-2 py-2 rounded-xl shadow-sm text-xs font-bold text-center whitespace-nowrap hover:bg-white hover:scale-105 transition-all cursor-default backdrop-blur-sm"
+                        title={`图${w.imageIndex} - 格子 #${w.cellIndex + 1}`}
+                       >
+                         图{w.imageIndex} - #{w.cellIndex + 1}
+                       </div>
+                     ))}
                    </div>
-                 ))}
                </div>
              </div>
            )}
@@ -1116,54 +1168,67 @@ const App: React.FC = () => {
 
       {/* --- Mobile Bottom Bar --- */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 flex flex-col justify-end pointer-events-none">
-        {globalWinners.length > 0 && !isLotteryRunning && isMobileResultsOpen && (
-           <div className="bg-white/95 backdrop-blur border-t border-gray-200 p-3 max-h-40 overflow-y-auto animate-slide-up shadow-sm pointer-events-auto">
-              <div className="flex items-center justify-between mb-2">
+        {/* Mobile Results Popup (Absolute positioned to avoid layout jumping) */}
+         <div className={`
+             glass-panel p-4 max-h-48 overflow-y-auto shadow-2xl pointer-events-auto mx-4 mb-2 rounded-[1.5rem] border border-white/40
+             transition-all duration-300 ease-out origin-bottom absolute bottom-[calc(100%+8px)] left-0 right-0
+             ${globalWinners.length > 0 && !isLotteryRunning && isMobileResultsOpen 
+                ? 'opacity-100 scale-100 translate-y-0' 
+                : 'opacity-0 scale-95 translate-y-4 pointer-events-none'}
+         `}>
+              <div className="flex items-center justify-between mb-3">
                  <h3 className="font-bold text-gray-700 text-xs flex items-center gap-2">
                    <CheckCircle2 size={14} className="text-wechat" /> 中奖名单 ({globalWinners.length})
                  </h3>
-                 <button onClick={() => setIsMobileResultsOpen(false)} className="text-xs text-gray-400">收起</button>
+                 <button onClick={() => setIsMobileResultsOpen(false)} className="text-xs text-gray-500 bg-gray-100/50 px-3 py-1.5 rounded-full font-bold active:scale-95 transition-transform">收起</button>
               </div>
               <div className="flex flex-wrap gap-2">
                  {globalWinners.map((w, i) => (
-                   <div key={i} className="bg-white border border-wechat text-wechat px-2 py-0.5 rounded shadow-sm text-xs">
+                   <div key={i} className="bg-white/80 border border-wechat/20 text-wechat-dark px-3 py-1.5 rounded-xl shadow-sm text-xs font-bold">
                      图{w.imageIndex} #{w.cellIndex + 1}
                    </div>
                  ))}
               </div>
            </div>
-        )}
 
-        <div className="bg-white border-t border-gray-200 px-4 py-2 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] flex items-center justify-between shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] pointer-events-auto">
-           <div className="flex gap-4">
+        <div className="glass-panel rounded-t-[2rem] border-b-0 px-6 py-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))] flex items-center justify-between shadow-[0_-10px_40px_rgba(0,0,0,0.1)] pointer-events-auto bg-white/70 backdrop-blur-3xl">
+           <div className="flex gap-6">
               <button 
                 onClick={() => { setIsMobileSettingsOpen(true); setMobileTab('images'); }}
-                className="flex flex-col items-center text-gray-500 hover:text-wechat px-1"
+                className="flex flex-col items-center text-gray-400 hover:text-wechat px-1 transition-all duration-300 group active:scale-90"
               >
-                <ImageIcon size={20} />
-                <span className="text-[10px] mt-0.5">图片</span>
+                <div className="p-1 rounded-xl group-hover:bg-wechat/10 transition-colors mb-0.5">
+                   <ImageIcon size={24} strokeWidth={2} />
+                </div>
+                <span className="text-[10px] font-bold">图片</span>
               </button>
               <button 
                 onClick={() => { setIsMobileSettingsOpen(true); setMobileTab('settings'); }}
-                className="flex flex-col items-center text-gray-500 hover:text-wechat px-1"
+                className="flex flex-col items-center text-gray-400 hover:text-wechat px-1 transition-all duration-300 group active:scale-90"
               >
-                <Settings2 size={20} />
-                <span className="text-[10px] mt-0.5">设置</span>
+                 <div className="p-1 rounded-xl group-hover:bg-wechat/10 transition-colors mb-0.5">
+                    <Settings2 size={24} strokeWidth={2} />
+                 </div>
+                <span className="text-[10px] font-bold">设置</span>
               </button>
               <button 
                 onClick={() => { setIsMobileSettingsOpen(true); setMobileTab('history'); }}
-                className="flex flex-col items-center text-gray-500 hover:text-wechat px-1"
+                className="flex flex-col items-center text-gray-400 hover:text-wechat px-1 transition-all duration-300 group active:scale-90"
               >
-                <History size={20} />
-                <span className="text-[10px] mt-0.5">记录</span>
+                 <div className="p-1 rounded-xl group-hover:bg-wechat/10 transition-colors mb-0.5">
+                   <History size={24} strokeWidth={2} />
+                 </div>
+                <span className="text-[10px] font-bold">记录</span>
               </button>
               {globalWinners.length > 0 && (
                 <button 
                   onClick={() => setIsMobileResultsOpen(!isMobileResultsOpen)}
-                  className={`flex flex-col items-center px-1 ${isMobileResultsOpen ? 'text-wechat' : 'text-gray-500 hover:text-wechat'}`}
+                  className={`flex flex-col items-center px-1 transition-all duration-300 group active:scale-90 ${isMobileResultsOpen ? 'text-wechat' : 'text-gray-400 hover:text-wechat'}`}
                 >
-                  <Trophy size={20} />
-                  <span className="text-[10px] mt-0.5">结果</span>
+                  <div className="p-1 rounded-xl group-hover:bg-wechat/10 transition-colors mb-0.5">
+                     <Trophy size={24} strokeWidth={2} />
+                  </div>
+                  <span className="text-[10px] font-bold">结果</span>
                 </button>
               )}
            </div>
@@ -1171,45 +1236,45 @@ const App: React.FC = () => {
            <button 
              onClick={startLottery} 
              disabled={isLotteryRunning || totalEligibleCount === 0}
-             className={`px-5 py-2 rounded-full font-bold text-white text-sm flex items-center gap-1.5 shadow-md shadow-wechat/20
-               ${isLotteryRunning ? 'bg-gray-400' : 'bg-wechat'}`}
+             className={`px-7 py-3 rounded-full font-black text-white text-sm flex items-center gap-2 shadow-lg active:scale-95 transition-all duration-300
+               ${isLotteryRunning ? 'bg-gray-400 shadow-none' : 'bg-gradient-to-r from-wechat to-[#05a350] shadow-wechat/40'}`}
            >
-              {isLotteryRunning ? '...' : <Play size={16} fill="currentColor" />} 
+              {isLotteryRunning ? '...' : <Play size={18} fill="currentColor" />} 
               {isLotteryRunning ? '抽奖' : '开始'}
            </button>
         </div>
       </div>
 
-       {/* --- Mobile Drawer --- */}
-       {isMobileSettingsOpen && (
-          <div className="fixed inset-0 z-50 flex flex-col justify-end">
-             <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsMobileSettingsOpen(false)}></div>
-             
-             <div className="bg-white rounded-t-2xl p-4 overflow-y-auto animate-slide-up shadow-2xl relative max-h-[85vh] flex flex-col pb-[calc(2rem+env(safe-area-inset-bottom))]">
-                <div className="w-12 h-1.5 bg-gray-300 rounded-full mx-auto mb-4 flex-shrink-0"></div>
+       {/* --- Mobile Drawer (Smooth Transition) --- */}
+       <div className={`fixed inset-0 z-50 flex flex-col justify-end transition-all duration-500 ${isMobileSettingsOpen ? 'visible' : 'invisible'}`}>
+           {/* Backdrop */}
+           <div 
+             className={`absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity duration-500 ${isMobileSettingsOpen ? 'opacity-100' : 'opacity-0'}`} 
+             onClick={() => setIsMobileSettingsOpen(false)}
+           ></div>
+           
+           {/* Drawer Content */}
+           <div className={`
+               bg-white/80 backdrop-blur-2xl rounded-t-[2.5rem] p-6 overflow-y-auto shadow-[0_-10px_60px_rgba(0,0,0,0.2)] relative max-h-[85vh] flex flex-col pb-[calc(2rem+env(safe-area-inset-bottom))] border-t border-white/50
+               transition-transform duration-500 cubic-bezier(0.32, 0.72, 0, 1)
+               ${isMobileSettingsOpen ? 'translate-y-0' : 'translate-y-full'}
+           `}>
+                <div className="w-14 h-1.5 bg-gray-300/60 rounded-full mx-auto mb-8 flex-shrink-0"></div>
                 
-                <div className="flex items-center gap-4 border-b border-gray-100 mb-4 flex-shrink-0">
-                   <button 
-                    onClick={() => setMobileTab('images')}
-                    className={`pb-2 text-sm font-bold ${mobileTab === 'images' ? 'text-wechat border-b-2 border-wechat' : 'text-gray-400'}`}
-                   >
-                     图片列表
-                   </button>
-                   <button 
-                    onClick={() => setMobileTab('settings')}
-                    className={`pb-2 text-sm font-bold ${mobileTab === 'settings' ? 'text-wechat border-b-2 border-wechat' : 'text-gray-400'}`}
-                   >
-                     抽奖设置
-                   </button>
-                   <button 
-                    onClick={() => setMobileTab('history')}
-                    className={`pb-2 text-sm font-bold ${mobileTab === 'history' ? 'text-wechat border-b-2 border-wechat' : 'text-gray-400'}`}
-                   >
-                     历史记录
-                   </button>
+                <div className="flex items-center gap-2 bg-gray-100/50 p-1 rounded-2xl mb-6 flex-shrink-0 shadow-inner">
+                   {['images', 'settings', 'history'].map((tab) => (
+                     <button 
+                      key={tab}
+                      onClick={() => setMobileTab(tab as any)}
+                      className={`flex-1 py-2.5 text-sm font-bold rounded-xl transition-all duration-300 active:scale-95
+                        ${mobileTab === tab ? 'bg-white text-wechat shadow-lg shadow-gray-200/50' : 'text-gray-400 hover:text-gray-600'}`}
+                     >
+                       {tab === 'images' ? '图片' : tab === 'settings' ? '设置' : '历史'}
+                     </button>
+                   ))}
                 </div>
 
-                <div className="flex-1 overflow-y-auto pb-4">
+                <div className="flex-1 overflow-y-auto pb-4 custom-scrollbar">
                   {mobileTab === 'images' && <ImageList />}
                   {mobileTab === 'settings' && <SettingsPanel />}
                   {mobileTab === 'history' && <HistoryList />}
@@ -1217,13 +1282,12 @@ const App: React.FC = () => {
 
                 <button 
                   onClick={() => setIsMobileSettingsOpen(false)}
-                  className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"
+                  className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 bg-white/50 p-2 rounded-full transition-all duration-300 backdrop-blur-md active:scale-90"
                 >
-                  <ChevronDown size={24} />
+                  <ChevronDown size={22} />
                 </button>
              </div>
-          </div>
-        )}
+        </div>
 
     </div>
   );
@@ -1241,6 +1305,7 @@ interface CanvasEditorProps {
   setScale: React.Dispatch<React.SetStateAction<number>>;
   pan: { x: number, y: number };
   setPan: React.Dispatch<React.SetStateAction<{ x: number, y: number }>>;
+  setMode: (mode: InteractionMode) => void;
   isPanningMode: boolean;
   gridColor: string;
   tempFlasher: {imageId: string, cellIndex: number} | null;
@@ -1699,6 +1764,20 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
     
     activePointers.current.delete(e.pointerId);
+
+    // Fix for jumping: If we were pinching (2 fingers) and lifted one,
+    // we must re-anchor the startPos for the remaining finger to current coordinates
+    // so that subsequent single-finger moves don't apply a stale large delta.
+    if (activePointers.current.size === 1 && pinchStartInfo.current) {
+       const remaining = activePointers.current.values().next().value;
+       if (remaining) {
+         setStartPos({ x: remaining.x, y: remaining.y });
+         setInitialPan({ ...pan });
+         // Ensure we continue smoothly in panning mode
+         setMode('panning');
+       }
+    }
+
     if (activePointers.current.size < 2) {
       pinchStartInfo.current = null;
     }
@@ -1767,7 +1846,7 @@ const CanvasEditor: React.FC<CanvasEditorProps> = ({
   return (
     <div 
       ref={containerRef} 
-      className={`w-full h-full bg-gray-200 select-none ${isPanningMode ? 'cursor-grab active:cursor-grabbing' : ''}`}
+      className={`w-full h-full bg-transparent select-none ${isPanningMode ? 'cursor-grab active:cursor-grabbing' : ''}`}
     >
         <canvas
           ref={canvasRef}
